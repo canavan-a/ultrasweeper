@@ -118,7 +118,10 @@ void setup()
 
 void loop()
 {
-  radios[0].radio.setChannel(random(80));
-  radios[1].radio.setChannel(random(80));
+
+  // radios[0].radio.setChannel(random(0, 19));
+  // radios[1].radio.setChannel(random(20, 39));
+  radios[0].radio.setChannel(random(40, 59));
+  radios[1].radio.setChannel(random(60, 79));
   delayMicroseconds(random(60));
 }
