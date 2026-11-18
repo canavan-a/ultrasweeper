@@ -27,6 +27,7 @@
 
 #include <esp_bt.h>
 #include <esp_bt_main.h>
+#include <esp_system.h>
 #include <esp_wifi.h>
 
 #include "RF24.h"
@@ -345,7 +346,13 @@ void setup() {
 	attachInterrupt(digitalPinToInterrupt(SCANNER_PIR_PIN), pir_isr, CHANGE);
 #endif
 
-	Serial.printf("PROTO=1 DEV:scanner-usb FW:M1\r\n");
+	uint8_t base_mac[6];
+	esp_efuse_mac_get_default(base_mac); // factory eFuse: unique per
+	                                     // board, stable across reflashes
+	Serial.printf(
+	    "PROTO=1 DEV:scanner-usb ID:%02X%02X%02X%02X%02X%02X FW:M1\r\n",
+	    base_mac[0], base_mac[1], base_mac[2], base_mac[3], base_mac[4],
+	    base_mac[5]);
 	Serial.printf("BANNER:SCANNER A=%d/%d B=%d BATCH=%d STATS=%d PIR=%d\r\n",
 	              SCANNER_A_CH1, SCANNER_A_CH2, SCANNER_B_CH,
 	              SCANNER_BATCH_MS, SCANNER_STATS_MS, SCANNER_PIR_PIN);

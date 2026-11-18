@@ -13,13 +13,16 @@ app is the first client, not the owner of this format.
 - A session starts with exactly two unbatched lines:
 
   ```
-  PROTO=1 DEV:scanner-usb FW:M1
+  PROTO=1 DEV:scanner-usb ID:AABBCCDDEEFF FW:M1
   BANNER:SCANNER A=37/39 B=38 BATCH=2000 STATS=10000 PIR=27
   ```
 
   `PROTO=` is the stream version; a client that does not speak `1`
-  should stop reading. `BANNER:` echoes the live build configuration so
-  a capture file is self-describing.
+  should stop reading. `ID=` is the board's factory eFuse base MAC: a
+  permanent unique identifier per unit, stable across reflashes and
+  independent of any radio being enabled. Clients key devices by it.
+  `BANNER:` echoes the live build configuration so a capture file is
+  self-describing.
 
 ## Batches
 
