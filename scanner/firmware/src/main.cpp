@@ -85,8 +85,9 @@ constexpr uint8_t kBlobLen = 32;
 
 // BLE advertising PDU as received (post shim): [0]=hdr [1]=len
 // [2..7]=AdvA (LSB first) [8..]=AD data, then 3-byte CRC. len covers
-// AdvA+AD, so total = 2 + len + 3. AD payloads longer than kBlobLen
-// truncate on air; those cannot be CRC-checked and M1 drops them.
+// AdvA+AD, so total = 2 + len + 3. Frames longer than the 32-byte
+// FIFO lose their CRC (or part of it) on air; see handle_blob for
+// how those are still accepted, flagged CRC:P/CRC:S.
 
 void silenceOnboardRadios() {	// The ESP32 radio cores would be the loudest thing in the band we
 	// are listening to; deinit everything that could emit, and never
@@ -164,7 +165,7 @@ uint32_t batch_records = 0;
 
 struct Counters {
 	uint32_t rx_a = 0, rx_b = 0; // blobs from each radio
-	uint32_t ok = 0;            // CRC-valid PDUs
+	uint32_t ok = 0;            // accepted PDUs
 	uint32_t dup = 0;           // suppressed by dedup
 	uint32_t overflow = 0;      // forced early flushes
 } cnt;
@@ -239,6 +240,28 @@ bool dedup_pass(const uint8_t *mac, uint8_t pwr, uint32_t now) {
 
 // ---------------------------------------------------------------- capture
 
+// Walk the AD structure chain that follows AdvA (pdu[8..]). Accepts a
+// chain whose structures all fit the declared PDU length and are
+// self-consistent up to either its end or the FIFO cut-off; zero
+// padding terminates the chain. This is the only integrity evidence
+// available when the BLE CRC never made it into the FIFO.
+bool ad_walk_ok(const uint8_t *pdu, uint8_t len) {
+	const uint16_t ad_end = static_cast<uint16_t>(8u + len - 6u);
+	const uint16_t cap = ad_end < kBlobLen ? ad_end : kBlobLen;
+	uint16_t i = 8u;
+	while (i < cap) {
+		const uint8_t l = pdu[i];
+		if (l == 0u) {
+			break;
+		}
+		if (static_cast<uint16_t>(i + 1u + l) > ad_end) {
+			return false; // structure overruns the declared length
+		}
+		i = static_cast<uint16_t>(i + 1u + l); // may pass cap: cut by FIFO
+	}
+	return true;
+}
+
 // Handle one 32-byte FIFO blob from `ble_channel`. `rpd` is the raw
 // power register value forwarded verbatim (see PROTOCOL.md).
 void handle_blob(const uint8_t *blob, uint8_t ble_channel, uint8_t rpd,
@@ -257,7 +280,7 @@ void handle_blob(const uint8_t *blob, uint8_t ble_channel, uint8_t rpd,
 	// ADV/SCAN opcodes. This runs before the length rejection so
 	// truncated-on-air PDUs are visible too.
 	static uint32_t raw_emitted = 0;
-	if (raw_emitted < 200u && (pdu[0] & 0x1Fu) <= 0x07u && len >= 6u) {
+	if (raw_emitted < 200u && (pdu[0] & 0x0Fu) <= 0x04u && len >= 6u) {
 		raw_emitted++;
 		char raw[32 + 2 * kBlobLen];
 		int n = snprintf(raw, sizeof(raw), "RAW T:%lu CH:%u PWR:%u HEX:",
@@ -273,26 +296,53 @@ void handle_blob(const uint8_t *blob, uint8_t ble_channel, uint8_t rpd,
 		batch_add(raw, n);
 	}
 #endif
-	if (len < 6u || static_cast<uint16_t>(2u + len + 3u) > kBlobLen) {
-		// Either a noise blob with a junk length field, or an ADV
-		// truncated at the 32-byte FIFO limit: its trailing CRC was
-		// never received, so it cannot be verified. M1 drops both.
-		return;
+	if (len < 6u || len > 63u || (pdu[0] & 0x0Fu) > 0x04u) {
+		return; // not the shape of a legacy ADV PDU
 	}
-	const uint8_t total = static_cast<uint8_t>(2u + len + 3u);
-	const uint32_t want = ble_crc24(pdu, total - 3u);
-	const uint32_t got = static_cast<uint32_t>(pdu[total - 3u]) |
-	                     static_cast<uint32_t>(pdu[total - 2u]) << 8u |
-	                     static_cast<uint32_t>(pdu[total - 1u]) << 16u;
-	const bool crc_ok = (want == got);
-	if (!crc_ok) {
-		return; // noise blob; M1 keeps the stream clean (flagged records
-	                // come with the batched transport in later milestones)
+	// len 32..37 exceeds the spec's legacy cap of 31 but is common on
+	// real devices (Apple iBeacon/continuity, Microsoft MSVP). What
+	// matters for us is the FIFO: at 32 captured bytes, a PDU whose
+	// 2+len+3 air bytes overflow the FIFO loses some or all of its
+	// CRC. With the full 4-byte access address matched, accidental
+	// noise frames are negligible (~1 bit position in 2^32), so the
+	// fallback checks below are safe in practice.
+	const uint16_t air_total = static_cast<uint16_t>(2u + len + 3u);
+	const uint16_t pdu_bytes = static_cast<uint16_t>(2u + len);
+	char crc_flag = '1';
+	if (air_total <= kBlobLen) {
+		const uint32_t want = ble_crc24(pdu, static_cast<uint8_t>(pdu_bytes));
+		const uint32_t got = static_cast<uint32_t>(pdu[air_total - 3u]) |
+		                     static_cast<uint32_t>(pdu[air_total - 2u]) << 8u |
+		                     static_cast<uint32_t>(pdu[air_total - 1u]) << 16u;
+		if (want != got) {
+			return; // CRC present and wrong: bit-rotted copy, drop
+		}
+	} else {
+		if (!ad_walk_ok(pdu, len)) {
+			return;
+		}
+		if (pdu_bytes < kBlobLen) {
+			// One or two CRC bytes did arrive: they must match the
+			// CRC we compute over everything we captured.
+			const uint32_t want =
+			    ble_crc24(pdu, static_cast<uint8_t>(pdu_bytes));
+			const uint8_t n_crc = static_cast<uint8_t>(kBlobLen - pdu_bytes);
+			uint32_t got = 0;
+			for (uint8_t k = 0; k < n_crc; k++) {
+				got |= static_cast<uint32_t>(pdu[pdu_bytes + k]) << (8u * k);
+			}
+			if ((want & ((1UL << (8u * n_crc)) - 1UL)) != got) {
+				return;
+			}
+			crc_flag = 'P'; // CRC partially present and matched
+		} else {
+			crc_flag = 'S'; // CRC never arrived; AD structure only
+		}
 	}
 
 	// AdvA, LSB first on air -> print MSB first.
 	const uint8_t *mac = pdu + 2;
-	cnt.ok++; // counts CRC-valid PDUs, even if dedup suppresses it
+	cnt.ok++; // counts accepted PDUs, even if dedup suppresses it
 	if (!dedup_pass(mac, rpd, now)) {
 		return;
 	}
@@ -300,12 +350,15 @@ void handle_blob(const uint8_t *blob, uint8_t ble_channel, uint8_t rpd,
 	char line[16 + 12 * kBlobLen + 64];
 	int n = 0;
 	n = snprintf(line, sizeof(line),
-	             "MAC:%02X:%02X:%02X:%02X:%02X:%02X PWR:%u T:%lu CH:%u CRC:1 AD:",
+	             "MAC:%02X:%02X:%02X:%02X:%02X:%02X PWR:%u T:%lu CH:%u CRC:%c AD:",
 	             mac[5], mac[4], mac[3], mac[2], mac[1], mac[0],
 	             static_cast<unsigned>(rpd),
 	             static_cast<unsigned long>(now),
-	             static_cast<unsigned>(ble_channel));
-	for (int i = 0; i < total && n < static_cast<int>(sizeof(line)) - 3; i++) {
+	             static_cast<unsigned>(ble_channel), crc_flag);
+	const uint16_t emitted =
+	    air_total < kBlobLen ? air_total : static_cast<uint16_t>(kBlobLen);
+	for (uint16_t i = 0; i < emitted && n < static_cast<int>(sizeof(line)) - 3;
+	     i++) {
 		n += snprintf(line + n, sizeof(line) - n, "%02X", pdu[i]);
 	}
 	line[n++] = '\r';

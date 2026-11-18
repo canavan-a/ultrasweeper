@@ -49,7 +49,7 @@ BATCH-END n=<record-count>
 ### MAC — BLE advertisement (inside a batch)
 
 ```
-MAC:AA:BB:CC:DD:EE:FF PWR:<p> T:<ms> CH:<37|38|39> CRC:1 AD:<hex>
+MAC:AA:BB:CC:DD:EE:FF PWR:<p> T:<ms> CH:<37|38|39> CRC:<1|P|S> AD:<hex>
 ```
 
 - `MAC:` AdvA from the PDU, printed MSB-first as usual for Bluetooth.
@@ -62,12 +62,30 @@ MAC:AA:BB:CC:DD:EE:FF PWR:<p> T:<ms> CH:<37|38|39> CRC:1 AD:<hex>
   Client timestamps (host clock at batch arrival) are the reference
   for cross-session comparison.
 - `CH:` the BLE advertising channel it was heard on.
-- `CRC:1` — only CRC-valid PDUs are emitted in M1 (noise and
-  32-byte-truncated PDUs are dropped on-device).
+- `CRC:` how firmly the PDU was verified. Real-world advertisers
+  (Apple iBeacon/continuity, Microsoft MSVP) commonly use lengths
+  above the legacy spec cap, so the 32-byte FIFO often cuts off the
+  trailing CRC; all three levels are real frames:
+  - `1` — whole PDU plus CRC captured; 24-bit BLE CRC matches.
+  - `P` — CRC truncated, but the one or two CRC bytes that arrived
+    match the computed CRC (16-/8-bit partial check).
+  - `S` — CRC never reached the FIFO; accepted on structure alone:
+    valid PDU type, length, and an AD chain self-consistent within
+    the captured prefix. Repeated sightings are the corroboration.
 - `AD:` hex dump of the de-whitened PDU as received: header byte,
   length, AdvA (LSB-first, air order), AD structures, CRC — whatever
   fit in the 32-byte FIFO. Clients parse types; the firmware never
   interprets them.
+
+### RAW — pre-decision capture (diagnostic builds only)
+
+```
+RAW T:<ms> CH:<n> PWR:<p> HEX:<32 captured PDU bytes>
+```
+
+Emitted before the accept/drop decision for blobs that look like BLE
+PDUs, capped at 200 per session, so a capture can be decoded by hand.
+Not present in normal builds.
 
 ### PIR — motion event (inside a batch)
 
@@ -84,9 +102,9 @@ period). Only present when the build enables `SCANNER_PIR_PIN`.
 STATS T:<ms> RA:<n> RB:<n> OK:<n> DUP:<n> OVER:<n>
 ```
 
-Cumulative counters: blobs received on radio A / radio B, CRC-valid
-PDUs, records suppressed by dedup, forced early flushes. Diagnostic
-only; clients may ignore.
+Cumulative counters: blobs received on radio A / radio B, accepted
+PDUs (any CRC level), records suppressed by dedup, forced early
+flushes. Diagnostic only; clients may ignore.
 
 ## Dedup
 
@@ -98,6 +116,6 @@ window as the only guaranteed refresh.
 
 ## Future record types (reserved names)
 
-`WIFI:` (passive 2.4 GHz beacon SSID/BSSID/RSSI), `RAW:` (CRC-failed
-blobs, for research). Names are reserved by this document; adding a
-record type does not bump `PROTO=`. Clients skip what they don't know.
+`WIFI:` (passive 2.4 GHz beacon SSID/BSSID/RSSI). Names are reserved
+by this document; adding a record type does not bump `PROTO=`.
+Clients skip what they don't know.
