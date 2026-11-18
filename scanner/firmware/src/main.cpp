@@ -60,6 +60,16 @@ ScanRadio radioB{SCANNER_B_CE, SCANNER_B_CSN};
 // here is little-endian air order. Four-byte address width.
 constexpr uint64_t kAccessAddress = 0x6B7D9171ULL;
 
+// Diagnostic mode (SCANNER_DIAG=1): address width 2 with an arbitrary
+// 2-byte pattern, the RF24 library's "accept nearly any framed
+// energy" trick. The radio then matches only the first two address
+// bytes, so the FIFO starts two bytes early: the remaining two
+// address bytes (7D 6B in air order) precede the PDU. The shim's
+// offset below accounts for that.
+constexpr uint64_t kPipeAddress =
+    SCANNER_DIAG ? 0x0F0AULL : kAccessAddress;
+constexpr uint8_t kAddrPad = SCANNER_DIAG ? 2 : 0;
+
 // Fixed payload blob per RX interrupt: 32 bytes, the nRF24 maximum.
 constexpr uint8_t kBlobLen = 32;
 
@@ -220,11 +230,34 @@ void handle_blob(const uint8_t *blob, uint8_t ble_channel, uint8_t rpd,
                  uint32_t now) {
 	uint8_t pdu[kBlobLen];
 	for (uint8_t i = 0; i < kBlobLen; i++) {
-		pdu[i] = swapbits(blob[i]);
+		pdu[i] = swapbits(i + kAddrPad < kBlobLen ? blob[i + kAddrPad]
+		                                          : 0);
 	}
 	dewhiten(pdu, kBlobLen, ble_channel);
 
 	const uint8_t len = pdu[1];
+#if SCANNER_DIAG
+	// PDU-shaped blobs are dumped raw (capped at 200) so a capture
+	// can be decoded by hand: header types 0-7 are the legacy
+	// ADV/SCAN opcodes. This runs before the length rejection so
+	// truncated-on-air PDUs are visible too.
+	static uint32_t raw_emitted = 0;
+	if (raw_emitted < 200u && (pdu[0] & 0x1Fu) <= 0x07u && len >= 6u) {
+		raw_emitted++;
+		char raw[32 + 2 * kBlobLen];
+		int n = snprintf(raw, sizeof(raw), "RAW T:%lu CH:%u PWR:%u HEX:",
+		                 static_cast<unsigned long>(now),
+		                 static_cast<unsigned>(ble_channel),
+		                 static_cast<unsigned>(rpd));
+		for (uint8_t i = 0; i < kBlobLen && n < static_cast<int>(sizeof(raw)) - 3;
+		     i++) {
+			n += snprintf(raw + n, sizeof(raw) - n, "%02X", pdu[i]);
+		}
+		raw[n++] = '\r';
+		raw[n++] = '\n';
+		batch_add(raw, n);
+	}
+#endif
 	if (len < 6u || static_cast<uint16_t>(2u + len + 3u) > kBlobLen) {
 		// Either a noise blob with a junk length field, or an ADV
 		// truncated at the 32-byte FIFO limit: its trailing CRC was
@@ -307,11 +340,11 @@ void configure_rx(RF24 &radio, uint8_t nrf_channel) {
 	radio.setDataRate(RF24_1MBPS);
 	radio.disableCRC();          // BLE's CRC is checked in the shim
 	radio.setAutoAck(false);
-	radio.setAddressWidth(4);    // the BLE access address verbatim
+	radio.setAddressWidth(SCANNER_DIAG ? 2 : 4); // see kPipeAddress
 	radio.setPayloadSize(kBlobLen); // RF24 1.6.x name for fixed size
 	radio.stopListening();
 	radio.setChannel(nrf_channel);
-	radio.openReadingPipe(0, kAccessAddress);
+	radio.openReadingPipe(0, kPipeAddress);
 	radio.startListening();
 }
 
@@ -350,9 +383,9 @@ void setup() {
 	esp_efuse_mac_get_default(base_mac); // factory eFuse: unique per
 	                                     // board, stable across reflashes
 	Serial.printf(
-	    "PROTO=1 DEV:scanner-usb ID:%02X%02X%02X%02X%02X%02X FW:M1\r\n",
+	    "PROTO=1 DEV:scanner-usb ID:%02X%02X%02X%02X%02X%02X FW:M1%s\r\n",
 	    base_mac[0], base_mac[1], base_mac[2], base_mac[3], base_mac[4],
-	    base_mac[5]);
+	    base_mac[5], SCANNER_DIAG ? "-diag" : "");
 	Serial.printf("BANNER:SCANNER A=%d/%d B=%d BATCH=%d STATS=%d PIR=%d\r\n",
 	              SCANNER_A_CH1, SCANNER_A_CH2, SCANNER_B_CH,
 	              SCANNER_BATCH_MS, SCANNER_STATS_MS, SCANNER_PIR_PIN);
