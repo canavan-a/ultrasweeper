@@ -1,5 +1,5 @@
 {
-  description = "ultrasweeper - 2.4 GHz hopping-carrier sweeper on two nRF24L01s (ESP32)";
+  description = "ultrasweeper - constant-carrier RF sweepers on ESP32 + nRF24L01 (monorepo)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
