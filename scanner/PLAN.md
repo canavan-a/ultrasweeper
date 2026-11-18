@@ -59,8 +59,12 @@ input. That's the whole product.
   worth a dB or two of receive sensitivity, handled by the decoupling
   caps at each module and a quality supply. Budget: ~200–300 mA
   board-total with BLE active; M0 verifies regulator headroom on the
-  actual board. Battery option (M5): 18650 + charger module gives
-  ~8–12 h.
+  board. Battery option (M5): 18650 + charger module gives ~8–12 h.
+  *Optional insurance:* a dedicated $1 LDO (AMS1117/MCP1700) off the
+  USB 5 V line feeding only the nRF pair buys back the ~1–2 dB of
+  desense from ESP32 rail noise — real but small; caps come first,
+  and range is dominated by antenna placement and (at M5) PA+LNA
+  modules, not by supply topology.
 - **Antenna placement:** the two modules at opposite ends of the
   enclosure, antennas clear of metal and of each other by a few cm.
   Two spatially separated antennas are the point: simultaneous coverage
