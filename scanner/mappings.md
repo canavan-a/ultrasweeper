@@ -25,12 +25,16 @@ module's VCC/GND pins is still recommended.
 |----------|---------|
 | VCC      | 3.3V    |
 | GND      | GND     |
-| CE       | GPIO 2  |
-| CSN      | GPIO 15 |
+| CE       | GPIO 21 |
+| CSN      | GPIO 22 |
 | SCK      | GPIO 18 |
 | MOSI     | GPIO 23 |
 | MISO     | GPIO 19 |
 | IRQ      | unused (polled) |
+
+Do not put CSN on GPIO15: it is a strapping pin (pulled low at boot),
+which puts module B on the shared MISO line during boot and garbles
+SPI for both radios (seen as all-FF and corrupted register reads).
 
 ## PIR (HC-SR501 class)
 

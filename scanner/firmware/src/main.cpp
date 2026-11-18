@@ -47,6 +47,7 @@ namespace {
 class ScanRadio : public RF24 {
       public:
 	using RF24::RF24;
+	void reg_write(uint8_t r, uint8_t v) { write_register(r, v); }
 	uint8_t reg(uint8_t r) { return read_register(r); }
 	uint8_t power_register() { return reg(0x09); } // RPD/power byte
 };
@@ -372,10 +373,16 @@ void pir_isr() {
 // 0x0A..0x0D must read 71 91 7D 6B), and shows FIFO/carrier-detect
 // state (0x17 FIFO_STATUS, 0x14 RSSI: bit6 = carrier found).
 void dump_diag(const char *name, ScanRadio &radio) {
+	// Write/read-back probe: SETUP_RETR is a scratch byte nothing in
+	// RX mode uses. WTEST != A5 => SPI corrupt even when reads look
+	// plausible.
+	radio.reg_write(0x04, 0xA5u);
+	const uint8_t wtest = radio.reg(0x04);
+	radio.reg_write(0x04, 0x00u); // retries off, the RX-mode default
 	Serial.printf(
-	    "DIAG %s CFG:%02X RPD:%02X RSSI:%02X FIFO:%02X "
+	    "DIAG %s WTEST:%02X CFG:%02X RPD:%02X RSSI:%02X FIFO:%02X "
 	    "ADDR:%02X %02X %02X %02X\r\n",
-	    name, radio.reg(0x00), radio.reg(0x09), radio.reg(0x14),
+	    name, wtest, radio.reg(0x00), radio.reg(0x09), radio.reg(0x14),
 	    radio.reg(0x17), radio.reg(0x0A), radio.reg(0x0B), radio.reg(0x0C),
 	    radio.reg(0x0D));
 }
@@ -405,18 +412,9 @@ const char *reset_reason_name() {
 
 void setup() {
 	Serial.begin(SCANNER_BAUD);
-	silenceOnboardRadios();
 
-	configure_rx(radioA, nrf_ch(SCANNER_A_CH1));
-	configure_rx(radioB, nrf_ch(SCANNER_B_CH));
-	dump_diag("A", radioA);
-	dump_diag("B", radioB);
-
-#if SCANNER_PIR_PIN >= 0
-	pinMode(SCANNER_PIR_PIN, INPUT);
-	attachInterrupt(digitalPinToInterrupt(SCANNER_PIR_PIN), pir_isr, CHANGE);
-#endif
-
+	// Identity first: if the boot dies later, hello + reset reason are
+	// already on the wire.
 	uint8_t base_mac[6];
 	esp_efuse_mac_get_default(base_mac); // factory eFuse: unique per
 	                                     // board, stable across reflashes
@@ -428,6 +426,18 @@ void setup() {
 	Serial.printf("BANNER:SCANNER A=%d/%d B=%d BATCH=%d STATS=%d PIR=%d\r\n",
 	              SCANNER_A_CH1, SCANNER_A_CH2, SCANNER_B_CH,
 	              SCANNER_BATCH_MS, SCANNER_STATS_MS, SCANNER_PIR_PIN);
+
+	silenceOnboardRadios();
+
+	configure_rx(radioA, nrf_ch(SCANNER_A_CH1));
+	configure_rx(radioB, nrf_ch(SCANNER_B_CH));
+	dump_diag("A", radioA);
+	dump_diag("B", radioB);
+
+#if SCANNER_PIR_PIN >= 0
+	pinMode(SCANNER_PIR_PIN, INPUT);
+	attachInterrupt(digitalPinToInterrupt(SCANNER_PIR_PIN), pir_isr, CHANGE);
+#endif
 }
 
 void loop() {
