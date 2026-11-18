@@ -1,6 +1,7 @@
 // scanner — police scanner firmware (M1: see the air).
 //
-// Two nRF24L01+ modules receive BLE advertising packets directly. The
+// SCANNER_RADIOS=2: two nRF24L01+ modules receive BLE advertising
+// packets directly. The
 // loophole: every BLE advertisement on the air uses the same fixed
 // access address (0x8E89BED6) at 1 Mbps GFSK, which an nRF24 can
 // demodulate. We point each module's RX pipe at that address (with
@@ -13,8 +14,12 @@
 //
 // Radio A hops BLE channels 37<->39 (nRF 2<->80), radio B holds 38
 // (nRF 26): every advertiser is heard on at least one channel per
-// advertising event. The ESP32's own radios are torn down at boot, so
-// the device emits no RF and never detects itself.
+// advertising event. SCANNER_RADIOS=1 (current bench config, module B
+// is a wiring fault) drops B and runs A alone cycling 37->38->39;
+// every advertising event repeats on all three channels, so a single
+// fast hopper still hears every advertiser. The ESP32's own radios
+// are torn down at boot, so the device emits no RF and never detects
+// itself.
 //
 // Pins, channels, timing: build_flags in platformio.ini. Output is
 // line records on UART0 -> the onboard USB bridge -> whatever USB host
@@ -53,7 +58,9 @@ class ScanRadio : public RF24 {
 };
 
 ScanRadio radioA{SCANNER_A_CE, SCANNER_A_CSN};
+#if SCANNER_RADIOS >= 2
 ScanRadio radioB{SCANNER_B_CE, SCANNER_B_CSN};
+#endif
 
 // BLE access address 0x8E89BED6 with each byte bit-reversed (nRF24
 // clocks bits out MSB-first, BLE LSB-first): air order is
@@ -317,14 +324,16 @@ void pump(ScanRadio &radio, uint8_t ble_channel, uint32_t now) {
 	}
 }
 
-// All three configured channels must be BLE advertising channels; the
-// whitening seeds and nRF mapping below are only valid for 37/38/39.
+// All scanned channels must be BLE advertising channels; the whitening
+// seeds and nRF mapping below are only valid for 37/38/39.
 static_assert(SCANNER_A_CH1 == 37 || SCANNER_A_CH1 == 38 || SCANNER_A_CH1 == 39,
               "SCANNER_A_CH1 must be a BLE adv channel (37/38/39)");
 static_assert(SCANNER_A_CH2 == 37 || SCANNER_A_CH2 == 38 || SCANNER_A_CH2 == 39,
               "SCANNER_A_CH2 must be a BLE adv channel (37/38/39)");
+#if SCANNER_RADIOS >= 2
 static_assert(SCANNER_B_CH == 37 || SCANNER_B_CH == 38 || SCANNER_B_CH == 39,
               "SCANNER_B_CH must be a BLE adv channel (37/38/39)");
+#endif
 
 // BLE channel number -> nRF24 channel number. BLE 37/38/39 are
 // 2402/2426/2480 MHz, and the nRF24 channel number is MHz - 2400.
@@ -333,9 +342,23 @@ constexpr uint8_t nrf_ch(int ble_channel) {
 	                                                : 80; // 39
 }
 
-// Channel radio A is currently parked on (BLE number); alternated by
-// the hop timer in loop().
-uint8_t a_channel_now = SCANNER_A_CH1;
+// The channel sequence radio A cycles through. With two radios A only
+// needs 37<->39 (B holds 38). With one radio A must cover all three:
+// every BLE advertising event repeats on 37, 38 and 39 within ~2 ms,
+// so dwelling HOP_MS on each still catches every advertiser.
+constexpr uint8_t kAHop[] = {
+#if SCANNER_RADIOS >= 2
+    SCANNER_A_CH1, SCANNER_A_CH2
+#else
+    37, 38, 39
+#endif
+};
+constexpr size_t kAHopLen = sizeof(kAHop) / sizeof(kAHop[0]);
+
+// Index into kAHop of the channel radio A is currently parked on;
+// advanced by the hop timer in loop().
+size_t a_hop_now = 0;
+uint8_t a_channel_now = kAHop[0];
 
 void configure_rx(ScanRadio &radio, uint8_t nrf_channel) {
 	radio.begin();
@@ -423,16 +446,25 @@ void setup() {
 	    base_mac[0], base_mac[1], base_mac[2], base_mac[3], base_mac[4],
 	    base_mac[5], SCANNER_DIAG ? "-diag" : "");
 	Serial.printf("RESET:%s\r\n", reset_reason_name());
+#if SCANNER_RADIOS >= 2
 	Serial.printf("BANNER:SCANNER A=%d/%d B=%d BATCH=%d STATS=%d PIR=%d\r\n",
 	              SCANNER_A_CH1, SCANNER_A_CH2, SCANNER_B_CH,
 	              SCANNER_BATCH_MS, SCANNER_STATS_MS, SCANNER_PIR_PIN);
+#else
+	Serial.printf("BANNER:SCANNER A=37/38/39 B=off BATCH=%d STATS=%d PIR=%d\r\n",
+	              SCANNER_BATCH_MS, SCANNER_STATS_MS, SCANNER_PIR_PIN);
+#endif
 
 	silenceOnboardRadios();
 
-	configure_rx(radioA, nrf_ch(SCANNER_A_CH1));
+	configure_rx(radioA, nrf_ch(a_channel_now));
+#if SCANNER_RADIOS >= 2
 	configure_rx(radioB, nrf_ch(SCANNER_B_CH));
+#endif
 	dump_diag("A", radioA);
+#if SCANNER_RADIOS >= 2
 	dump_diag("B", radioB);
+#endif
 
 #if SCANNER_PIR_PIN >= 0
 	pinMode(SCANNER_PIR_PIN, INPUT);
@@ -444,7 +476,9 @@ void loop() {
 	const uint32_t now = millis();
 
 	pump(radioA, a_channel_now, now);
+#if SCANNER_RADIOS >= 2
 	pump(radioB, SCANNER_B_CH, now);
+#endif
 
 	// PIR events.
 #if SCANNER_PIR_PIN >= 0
@@ -458,16 +492,17 @@ void loop() {
 	}
 #endif
 
-	// Radio A alternates its two channels between blobs only: CE low,
-	// re-tune, CE high; PLL settle is 130 us and HOP_MS dwarfs it.
+	// Radio A re-tunes between blobs only: CE low, re-tune, CE high;
+	// PLL settle is 130 us and HOP_MS dwarfs it. Two-radio builds
+	// alternate 37<->39; single-radio builds cycle 37->38->39.
 	static uint32_t last_hop = 0;
 	if (now - last_hop >= SCANNER_HOP_MS && !radioA.available()) {
-		const uint8_t next = a_channel_now == SCANNER_A_CH1 ? SCANNER_A_CH2
-		                                                   : SCANNER_A_CH1;
+		const size_t next = (a_hop_now + 1) % kAHopLen;
 		radioA.stopListening();
-		radioA.setChannel(nrf_ch(next));
+		radioA.setChannel(nrf_ch(kAHop[next]));
 		radioA.startListening();
-		a_channel_now = next;
+		a_hop_now = next;
+		a_channel_now = kAHop[next];
 		last_hop = now;
 	}
 

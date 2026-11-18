@@ -1,5 +1,10 @@
 # Scanner wiring
 
+SCANNER_RADIOS=1 (the current bench configuration — module B's leg is
+a wiring fault) runs a single nRF24 on radio A's lines, cycling all
+three adv channels; the radio B table below is only used when
+SCANNER_RADIOS=2.
+
 Both nRF24L01+ modules share the ESP32 VSPI bus (SCK/MOSI/MISO are
 bus-wide); only CE and CSN differ per module. Power comes from the
 board's 3.3V rail — fine for receive-only use (~12-16 mA per module);
