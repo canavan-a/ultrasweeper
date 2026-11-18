@@ -33,8 +33,8 @@ input. That's the whole product.
     PIR in ───── │   │  CE1/CS1       │                  │
     PIR out ───► │   ├─ CE2/CS2 ──────┴─ nRF24 #B ── ant │   ← ch 38
                  └───────────────────────────────────────┘
-                   USB-C ⟷ phone app (data + power, primary)
-                   BLE GATT ⟷ phone app (untethered, optional)
+                   USB-C ⟷ phone app (data + power, sole link)
+                   (device emits no RF: both radios are quiet)
 ```
 
 - **Boards/parts:** `esp32dev` (ESP32-D0WDQ6 devkit — same board
@@ -67,12 +67,14 @@ input. That's the whole product.
   receives*: RX is ~12–16 mA/module, ~30 mA total for both — trivial
   for the onboard regulator. The brownout folklore around nRF24s is
   about TX (115 mA bursts; PA modules worse), which this design never
-  does on those radios. The real rail hazard is the ESP32's own
-  240–500 mA radio bursts coupling noise into the shared 3.3 V rail —
-  worth a dB or two of receive sensitivity, handled by the decoupling
-  caps at each module and a quality supply. Budget: ~200–300 mA
-  board-total with BLE active; M0 verifies regulator headroom on the
-  board. Battery option (M5): 18650 + charger module gives ~8–12 h.
+  does on those radios. The main shared-rail hazard was the ESP32's
+  own 240–500 mA radio bursts coupling noise into the 3.3 V rail —
+  moot in the product build, which keeps the ESP32's radio stack
+  **off** entirely (see §4); the decoupling caps still go on as
+  matter of habit. Budget with radios off: roughly 60–120 mA
+  board-total; M0 verifies regulator headroom on the board. Battery
+  option (M5): a 3000 mAh 18650 + charger module runs this for
+  ~24–36 h.
   *Optional insurance:* a dedicated $1 LDO (AMS1117/MCP1700) off the
   USB 5 V line feeding only the nRF pair buys back the ~1–2 dB of
   desense from ESP32 rail noise — real but small; caps come first,
@@ -122,22 +124,29 @@ scanner can show "how busy is 2.4 GHz right now" for free.
 ## 4. Firmware (`scanner/firmware/`, PlatformIO, repo conventions)
 
 - Environments in one `platformio.ini`:
-  - `scanner-usb` — the primary build: dual-nRF sensing, records out
-    UART0 to the onboard USB bridge; the phone (or any laptop) is the
-    USB host. Simplest, fastest, zero radio protocols in the data
-    path — the M1 stream *is* the product transport.
-  - `scanner-ble` — untethered build: same sensing, records over an
-    ESP32 GATT peripheral the phone pairs with. The ESP32's own radio
-    is not used for sensing, so this is plain stable peripheral mode.
-    For pocket/walk posture, where being cable-free matters more than
-    the cable's robustness.
-  - `scanner-wifi` — same sensing, pushes records over WebSocket to
-    a home server/laptop: the dev and desktop-dock build.
+  - `scanner-usb` — THE product build: dual-nRF sensing, ESP32 radios
+    **off** (no BLE stack, no WiFi), records out UART0 to the onboard
+    USB bridge; the phone (or any laptop) is the USB host. Simplest,
+    fastest, zero radio protocols in the data path — the M1 stream *is*
+    the product transport.
+  - `scanner-wifi` — same sensing, pushes records over WebSocket to a
+    home server/laptop: the dev and desktop-dock build only. (Known
+    artifact when used: the ESP32's own WiFi transmitter is in the
+    band its nRF24s hear — survey mode will show itself. Fine for dev;
+    another reason the field build is radio-off.)
+  - `scanner-ble` — *experimental option, not in the v1 plan* (M5):
+    same records over a GATT peripheral, for an untethered posture.
+    Costs the RF-mute property — the device starts detecting its own
+    advertising — plus the power and stack complexity.
   - All pins, channels, PWR floor, dedup intervals as `build_flags`;
     sources stay generic (horus-3 idiom). The record stream is
-    identical in all three; transport is the only per-env difference.
-- **Passive only**: the nRF24s never transmit. The scanner cannot be
-  detected by anything it watches.
+    identical in all envs; transport is the only per-env difference.
+- **The device is RF-mute**: the nRF24s never transmit, and
+  `scanner-usb` leaves the ESP32's radio stack down (`btTeardown()`
+  /WiFi off — the same on-board-radio teardown idiom already used in
+  the jammer firmware). Nothing to be heard, nothing to self-detect,
+  and the ESP32's ~80–240 mA radio bursts leave the power budget —
+  board total drops to well under 100 mA.
 - **Buffering**: static ring buffer, no heap; ~40 B/record, 2 KB ≈
   50 records; overflow drops oldest and flags the gap to the app.
 - **Dedup (on-device, transport hygiene only)**: re-report a MAC only
@@ -160,8 +169,8 @@ be a later reduced variant). Native Kotlin: background service + list
 1. **Link**: USB-serial via `usb-serial-for-android` (enumerates the
    devkit's CP2102/CH340 or an S3's native CDC on plug-in; Android
    USB-host permission dialog once per device) — the primary path.
-   BLE GATT client for the untethered build. Show link type/age and
-   buffer/overflow stats.
+   BLE GATT client for the optional untethered build (M5). Show link
+   type/age and buffer/overflow stats.
 2. Decode raw AD; offline IEEE OUI table (SQLite) for MAC→vendor.
 3. **Police classifier** — editable rule list, seeded from the
    research: company ID `0x034D`/`0xFC81` or OUI `00:25:DF` → *Axon
@@ -218,11 +227,11 @@ records, Grafana/SQLite on the server, no phone needed — decide at M4.
 | Adv PDUs > 32 B truncate at the nRF24 payload limit | Header + MAC + first ~21 AD bytes survive — exactly where OUI/company-ID signatures live; flag truncation. |
 | No BLE5 2M/Coded extended advertising on nRF24 | Body cams and legacy police gear use legacy 1M adv; survey mode still sees ext-adv energy; revisit front-end only if a real target needs it. |
 | nRF24 brownouts/RF saturation on shared 3.3 V rail | Caps at each module, quality supply, M0 exists to find this at the bench not in the field. |
-| Phone USB-host VBUS throttles (< board budget) | Verify per-phone at M2; powered USB-C hub or powerbank + data-only to phone; S3 native USB is the lower-draw production path. |
+| Phone USB-host VBUS throttles (< board budget) | Verify per-phone at M2; with the ESP32 radio off the budget is well under what any phone hosts, but a powered USB-C hub or powerbank + data-only to phone is the fallback. |
 | Two nRF24s near each other (self-interference) | They only receive; antennas at opposite ends of the enclosure; verify capture rates in M1. |
 | Target devices randomize MACs | Classify on AD payload, keep raw AD forever. |
 | iOS lacks MAC access | Android-first; iOS later as reduced variant. |
-| Duty of a listening device in public | Passive only, no transmissions on the nRF24s, no location stored on-device. |
+| Duty of a listening device in public | The product build is RF-mute: passive sensing, ESP32 radio stack off, no transmissions of any kind, no location stored on-device. |
 
 ## 8. Open questions
 
