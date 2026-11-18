@@ -47,7 +47,7 @@ namespace {
 class ScanRadio : public RF24 {
       public:
 	using RF24::RF24;
-	void reg_write(uint8_t r, uint8_t v) { write_register(r, v); }
+	void reg_write(uint8_t r, uint8_t v) { setRetries(r, v); } // scratch reg 0x04 only
 	uint8_t reg(uint8_t r) { return read_register(r); }
 	uint8_t power_register() { return reg(0x09); } // RPD/power byte
 };
@@ -373,12 +373,12 @@ void pir_isr() {
 // 0x0A..0x0D must read 71 91 7D 6B), and shows FIFO/carrier-detect
 // state (0x17 FIFO_STATUS, 0x14 RSSI: bit6 = carrier found).
 void dump_diag(const char *name, ScanRadio &radio) {
-	// Write/read-back probe: SETUP_RETR is a scratch byte nothing in
-	// RX mode uses. WTEST != A5 => SPI corrupt even when reads look
-	// plausible.
-	radio.reg_write(0x04, 0xA5u);
+	// Write/read-back probe: SETUP_RETR (0x04) is a scratch byte
+	// nothing in RX mode uses; setRetries is its public door.
+	// WTEST != A5 => SPI corrupt even when reads look plausible.
+	radio.reg_write(0x0Au, 0x05u); // SETUP_RETR = 0xA5
 	const uint8_t wtest = radio.reg(0x04);
-	radio.reg_write(0x04, 0x00u); // retries off, the RX-mode default
+	radio.reg_write(0x00u, 0x00u); // retries off, the RX-mode default
 	Serial.printf(
 	    "DIAG %s WTEST:%02X CFG:%02X RPD:%02X RSSI:%02X FIFO:%02X "
 	    "ADDR:%02X %02X %02X %02X\r\n",
