@@ -28,6 +28,7 @@
 #include <esp_bt.h>
 #include <esp_bt_main.h>
 #include <esp_mac.h>
+#include <esp_system.h>
 #include <esp_wifi.h>
 
 #include "RF24.h"
@@ -46,7 +47,8 @@ namespace {
 class ScanRadio : public RF24 {
       public:
 	using RF24::RF24;
-	uint8_t power_register() { return read_register(0x09); }
+	uint8_t reg(uint8_t r) { return read_register(r); }
+	uint8_t power_register() { return reg(0x09); } // RPD/power byte
 };
 
 ScanRadio radioA{SCANNER_A_CE, SCANNER_A_CSN};
@@ -78,8 +80,7 @@ constexpr uint8_t kBlobLen = 32;
 // AdvA+AD, so total = 2 + len + 3. AD payloads longer than kBlobLen
 // truncate on air; those cannot be CRC-checked and M1 drops them.
 
-void silenceOnboardRadios() {
-	// The ESP32 radio cores would be the loudest thing in the band we
+void silenceOnboardRadios() {	// The ESP32 radio cores would be the loudest thing in the band we
 	// are listening to; deinit everything that could emit, and never
 	// re-init. Same teardown idiom as the jammer firmware.
 	esp_bt_controller_deinit();
@@ -335,7 +336,7 @@ constexpr uint8_t nrf_ch(int ble_channel) {
 // the hop timer in loop().
 uint8_t a_channel_now = SCANNER_A_CH1;
 
-void configure_rx(RF24 &radio, uint8_t nrf_channel) {
+void configure_rx(ScanRadio &radio, uint8_t nrf_channel) {
 	radio.begin();
 	radio.setDataRate(RF24_1MBPS);
 	radio.disableCRC();          // BLE's CRC is checked in the shim
@@ -365,6 +366,41 @@ void pir_isr() {
 	}
 }
 
+// Boot self-test: read back each radio's key registers. Proves the
+// SPI path is alive (garbage/00/FF means wiring or power), that
+// openReadingPipe wrote the address we think it did (RX_ADDR_P0 at
+// 0x0A..0x0D must read 71 91 7D 6B), and shows FIFO/carrier-detect
+// state (0x17 FIFO_STATUS, 0x14 RSSI: bit6 = carrier found).
+void dump_diag(const char *name, ScanRadio &radio) {
+	Serial.printf(
+	    "DIAG %s CFG:%02X RPD:%02X RSSI:%02X FIFO:%02X "
+	    "ADDR:%02X %02X %02X %02X\r\n",
+	    name, radio.reg(0x00), radio.reg(0x09), radio.reg(0x14),
+	    radio.reg(0x17), radio.reg(0x0A), radio.reg(0x0B), radio.reg(0x0C),
+	    radio.reg(0x0D));
+}
+
+const char *reset_reason_name() {
+	switch (esp_reset_reason()) {
+	case ESP_RST_POWERON:
+		return "POWERON";
+	case ESP_RST_BROWNOUT:
+		return "BROWNOUT";
+	case ESP_RST_PANIC:
+		return "PANIC";
+	case ESP_RST_INT_WDT:
+		return "INT-WDT";
+	case ESP_RST_TASK_WDT:
+		return "TASK-WDT";
+	case ESP_RST_WDT:
+		return "WDT";
+	case ESP_RST_SW:
+		return "SOFTWARE";
+	default:
+		return "OTHER";
+	}
+}
+
 } // namespace
 
 void setup() {
@@ -373,6 +409,8 @@ void setup() {
 
 	configure_rx(radioA, nrf_ch(SCANNER_A_CH1));
 	configure_rx(radioB, nrf_ch(SCANNER_B_CH));
+	dump_diag("A", radioA);
+	dump_diag("B", radioB);
 
 #if SCANNER_PIR_PIN >= 0
 	pinMode(SCANNER_PIR_PIN, INPUT);
@@ -386,6 +424,7 @@ void setup() {
 	    "PROTO=1 DEV:scanner-usb ID:%02X%02X%02X%02X%02X%02X FW:M1%s\r\n",
 	    base_mac[0], base_mac[1], base_mac[2], base_mac[3], base_mac[4],
 	    base_mac[5], SCANNER_DIAG ? "-diag" : "");
+	Serial.printf("RESET:%s\r\n", reset_reason_name());
 	Serial.printf("BANNER:SCANNER A=%d/%d B=%d BATCH=%d STATS=%d PIR=%d\r\n",
 	              SCANNER_A_CH1, SCANNER_A_CH2, SCANNER_B_CH,
 	              SCANNER_BATCH_MS, SCANNER_STATS_MS, SCANNER_PIR_PIN);
