@@ -52,10 +52,12 @@ ScanRadio radioA{SCANNER_A_CE, SCANNER_A_CSN};
 ScanRadio radioB{SCANNER_B_CE, SCANNER_B_CSN};
 
 // BLE access address 0x8E89BED6 with each byte bit-reversed (nRF24
-// clocks bits out MSB-first, BLE LSB-first), in air order: 8E->71,
-// 89->91, BE->7D, D6->6B. Four-byte address width is the one the
-// nRF24 uses verbatim; then the payload FIFO starts at the PDU header.
-constexpr uint64_t kAccessAddress = 0x71917D6BULL;
+// clocks bits out MSB-first, BLE LSB-first): air order is
+// 8E->71, 89->91, BE->7D, D6->6B. The nRF24 transits/checks the
+// address least-significant byte of the register first, and RF24's
+// openReadingPipe writes the uint64's LSB into byte 0 — so the value
+// here is little-endian air order. Four-byte address width.
+constexpr uint64_t kAccessAddress = 0x6B7D9171ULL;
 
 // Fixed payload blob per RX interrupt: 32 bytes, the nRF24 maximum.
 constexpr uint8_t kBlobLen = 32;
