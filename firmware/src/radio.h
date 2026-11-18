@@ -46,7 +46,17 @@ struct SweeperRadio {
 	// Jump to one random channel in [low, high).
 	void hop(int low, int high);
 
+	// Deterministic sweep: step through [low, high) with a fixed stride,
+	// wrapping around. With stride coprime to the range size (checked at
+	// compile time in main.cpp), every channel is hit exactly once per
+	// cycle -- uniform duty, no starved channels like random hopping.
+	void hopNext(int low, int high, int stride);
+
 	RF24 rf;
 	SPIClass spi;
 	RadioPins pins;
+
+private:
+	// Position within the stride sweep; the first hopNext starts here.
+	int cursor = 0;
 };

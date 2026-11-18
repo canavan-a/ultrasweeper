@@ -2,10 +2,11 @@
 //
 // Two nRF24L01s ride both ESP32 hardware SPI buses and act as hopping
 // constant carriers: radio A sweeps one range of 2.4 GHz channels, radio B a
-// disjoint range above it, hopping randomly as fast as the bus allows. The
-// ESP32's own radios (BLE + WiFi) are torn down at boot so they cannot
-// contaminate the band. Pin maps and channel ranges are build_flags in
-// platformio.ini; wiring notes are in ../../mappings.md.
+// disjoint range above it, each on a deterministic stride cycle that visits
+// every channel exactly once (see loop()). The ESP32's own radios (BLE +
+// WiFi) are torn down at boot so they cannot contaminate the band. Pin
+// maps, channel ranges and strides are build_flags in platformio.ini;
+// wiring notes are in ../../mappings.md.
 //
 // The plain send/receive reference sketches the device was built against are
 // separate environments: listener.cpp and publisher.cpp.
@@ -14,6 +15,8 @@
 #include <esp_bt.h>
 #include <esp_bt_main.h>
 #include <esp_wifi.h>
+
+#include <numeric>
 
 #include "radio.h"
 
@@ -38,6 +41,16 @@ void silenceOnboardRadios() {
 	}
 }
 
+// Stride sweeps visit every channel in the range exactly once per cycle
+// only if the stride shares no factor with the range size; catch a bad
+// choice at compile time rather than silently jamming a subset forever.
+static_assert(std::gcd(SWEEPER_A_STRIDE,
+                       SWEEPER_A_CHANNEL_HIGH - SWEEPER_A_CHANNEL_LOW) == 1,
+              "SWEEPER_A_STRIDE must be coprime with A's range size");
+static_assert(std::gcd(SWEEPER_B_STRIDE,
+                       SWEEPER_B_CHANNEL_HIGH - SWEEPER_B_CHANNEL_LOW) == 1,
+              "SWEEPER_B_STRIDE must be coprime with B's range size");
+
 } // namespace
 
 void setup() {
@@ -61,7 +74,18 @@ void setup() {
 }
 
 void loop() {
+#ifdef SWEEPER_HOP_RANDOM
+	// Uniform-random hopping: clusters some channels, starves others.
+	// Kept for comparison experiments; define SWEEPER_HOP_RANDOM to use.
 	radioA.hop(SWEEPER_A_CHANNEL_LOW, SWEEPER_A_CHANNEL_HIGH);
 	radioB.hop(SWEEPER_B_CHANNEL_LOW, SWEEPER_B_CHANNEL_HIGH);
+#else
+	// Stride sweep: each radio visits its whole range exactly once per
+	// cycle, evenly. Different strides keep the two radios decorrelated.
+	radioA.hopNext(SWEEPER_A_CHANNEL_LOW, SWEEPER_A_CHANNEL_HIGH,
+	              SWEEPER_A_STRIDE);
+	radioB.hopNext(SWEEPER_B_CHANNEL_LOW, SWEEPER_B_CHANNEL_HIGH,
+	              SWEEPER_B_STRIDE);
+#endif
 	delayMicroseconds(random(60));
 }

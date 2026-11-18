@@ -26,3 +26,8 @@ bool SweeperRadio::setup() {
 void SweeperRadio::hop(int low, int high) {
 	rf.setChannel(static_cast<uint8_t>(random(low, high)));
 }
+
+void SweeperRadio::hopNext(int low, int high, int stride) {
+	cursor = (cursor + stride) % (high - low);
+	rf.setChannel(static_cast<uint8_t>(low + cursor));
+}
