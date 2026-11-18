@@ -70,15 +70,15 @@ ScanRadio radioB{SCANNER_B_CE, SCANNER_B_CSN};
 // here is little-endian air order. Four-byte address width.
 constexpr uint64_t kAccessAddress = 0x6B7D9171ULL;
 
-// Diagnostic mode (SCANNER_DIAG=1): address width 2 with an arbitrary
-// 2-byte pattern, the RF24 library's "accept nearly any framed
-// energy" trick. The radio then matches only the first two address
-// bytes, so the FIFO starts two bytes early: the remaining two
-// address bytes (7D 6B in air order) precede the PDU. The shim's
-// offset below accounts for that.
-constexpr uint64_t kPipeAddress =
-    SCANNER_DIAG ? 0x0F0AULL : kAccessAddress;
-constexpr uint8_t kAddrPad = SCANNER_DIAG ? 2 : 0;
+// Diagnostic mode (SCANNER_DIAG=1) changes only the output volume and
+// the register dump, never the RF configuration: the pipe is always
+// the real BLE access address. (An earlier diag variant used address
+// width 2 with an arbitrary 2-byte pattern to catch "any framed
+// energy"; that also rejects every real BLE frame, because the first
+// two air bytes of the BLE access address must match. Only 4-byte
+// addressing frames BLE.)
+constexpr uint64_t kPipeAddress = kAccessAddress;
+constexpr uint8_t kAddrPad = 0;
 
 // Fixed payload blob per RX interrupt: 32 bytes, the nRF24 maximum.
 constexpr uint8_t kBlobLen = 32;
@@ -110,12 +110,18 @@ uint8_t swapbits(uint8_t b) {
 	return b;
 }
 
-// BLE data whitening is a 7-bit LFSR seeded with (channel<<1)|1, run
-// over the PDU bits in air order. After swapbits() each byte is in BLE
-// bit order, so XORing m=1,2,4... per byte with this LFSR undoes it.
-// (The classic Grinberg routine.)
+// BLE data whitening is a 7-bit LFSR (x^7+x^4+1) over the PDU bits in
+// air order. After swapbits() each byte is in BLE bit order, so XORing
+// m=1,2,4... per byte with this LFSR undoes the whitening. This is the
+// classic Grinberg routine ("Bluetooth LE fakery"), including its seed
+// convention: this left-shifting LFSR must be seeded with
+// swapbits(ble_channel)|2. The BLE spec's seed (channel<<1)|1 is for
+// the mirror-image right-shifting LFSR and does NOT work here: a
+// round-trip of a spec-valid packet through encode -> our shim fails
+// the CRC with the spec seed and passes exactly with this one (all
+// three adv channels), which is why every capture decoded as noise.
 void dewhiten(uint8_t *data, uint8_t len, uint8_t ble_channel) {
-	uint8_t lfsr = static_cast<uint8_t>((ble_channel << 1u) | 1u);
+	uint8_t lfsr = static_cast<uint8_t>(swapbits(ble_channel) | 2u);
 	while (len--) {
 		for (uint8_t m = 1; m; m <<= 1) {
 			if (lfsr & 0x80u) {
@@ -365,7 +371,8 @@ void configure_rx(ScanRadio &radio, uint8_t nrf_channel) {
 	radio.setDataRate(RF24_1MBPS);
 	radio.disableCRC();          // BLE's CRC is checked in the shim
 	radio.setAutoAck(false);
-	radio.setAddressWidth(SCANNER_DIAG ? 2 : 4); // see kPipeAddress
+	radio.setAddressWidth(4);    // BLE's access address is 4 bytes; this
+	                             // is what frames its packets
 	radio.setPayloadSize(kBlobLen); // RF24 1.6.x name for fixed size
 	radio.stopListening();
 	radio.setChannel(nrf_channel);
