@@ -121,6 +121,26 @@ Bonus mode (`-DSCANNER_SURVEY=1`): when not decoding, sweep the
 modules' RPD across channels and emit band-occupancy records — the
 scanner can show "how busy is 2.4 GHz right now" for free.
 
+Wi-Fi occupancy vs identity: the nRF24s *feel* Wi-Fi (OFDM is not
+GFSK — not one bit decodes) but map it as 20/40 MHz occupancy slabs on
+the 1 MHz channel grid — that's survey mode's main diet. *Reading*
+Wi-Fi is the ESP32's job, and it can be done without breaking the
+RF-mute rule: **passive-only scanning** — listen for beacon frames
+(shouted every 100 ms by every AP), never send a probe request, never
+associate. That yields SSID/BSSID/RSSI/channel for every 2.4 GHz
+network. It interleaves cleanly with everything else: the ESP32 radio
+dwells ~120 ms per channel 1–13 on a slow cycle, while the nRF24s —
+separate chips — keep catching BLE ads unaffected.
+
+Why this matters for police: Axon's infrastructure is Wi-Fi as much as
+BLE — vehicles run per-vehicle Wi-Fi networks (unique, sometimes
+hidden SSIDs) and body cams auto-upload to in-car and station
+networks. A new SSID appearing is *a car being here*. Limits, stated
+honestly: ESP32 Wi-Fi is 2.4 GHz only (newer Axon vehicle guidance is
+5 GHz — invisible to this box); hidden-SSID APs still beacon
+(presence known, name absent); Wi-Fi RX adds ~76 mA while dwelling —
+well inside the radio-off budget since it's a small duty cycle.
+
 ## 4. Firmware (`scanner/firmware/`, PlatformIO, repo conventions)
 
 - Environments in one `platformio.ini`:
@@ -151,10 +171,22 @@ scanner can show "how busy is 2.4 GHz right now" for free.
   50 records; overflow drops oldest and flags the gap to the app.
 - **Dedup (on-device, transport hygiene only)**: re-report a MAC only
   if its PWR bucket changed or 5 s passed; new MACs report at once.
+- **The wire protocol is a first-class artifact.** `scanner/PROTOCOL.md`
+  is written at M1 as the normative spec — line grammar, field meanings,
+  `PROTO=` handshake, error/overflow behavior — and the firmware, the
+  phone app, and everything else conform to *it*, not to each other.
+  The record stream is plain readable text on any byte pipe: a client
+  is anything that opens a serial port. The phone app is *first
+  client, not owner*: `picocom`/`pyserial` on a laptop, a Python
+  script, a home server, future tooling all work from day one. Adding
+  a record type or field is a spec revision (bump `PROTO=`), never an
+  app-private detail. Machine-checkable conformance: the M1 laptop
+  reader is the protocol's first test client.
 - **Wire records** (versioned by `PROTO=1` handshake):
 
   ```
   MAC:aa:bb:cc:dd:ee:ff PWR:27 T:123456 CH:37 CRC:1 AD:<hex-raw-pdu>
+  WIFI T:123456 BSSID:aa:bb:cc:dd:ee:ff CH:6 SSID:unit-214
   PIR T:123456 DUR:4.2
   BATCH-START seq=42      BATCH-END n=17
   ```
@@ -197,9 +229,10 @@ records, Grafana/SQLite on the server, no phone needed — decide at M4.
   RF24 examples on both instances. *Done when: both modules TX/RX to a
   third module back-to-back; brownout-free with caps.*
 - **M1 — see the air.** Dual-channel adv sniff + shim → NDJSON over
-  USB serial. *Done when: walking near any known BLE advertiser yields
-  its decoded records, PWR, and the two modules' capture rates are
-  comparable.* Also wire PIR (one ISR, one record type) — cheap now,
+  USB serial; `PROTOCOL.md` written alongside the code as the spec.
+  *Done when: walking near any known BLE advertiser yields its decoded
+  records and PWR — read happily by `picocom`/a script, with no app
+  anywhere.* Also wire PIR (one ISR, one record type) — cheap now,
   painful to retrofit.
 - **M2 — plug it into the phone.** Same record stream over USB OTG:
   first read it with a laptop (`pyserial`), then with a minimal Kotlin
