@@ -49,12 +49,18 @@ input. That's the whole product.
   27 (input, ESD-tolerant, no strapping role). Avoid input-only
   GPIOs 34–39, strapping pins 0/2→(use 15 instead of 2 if a conflict
   shows), flash pins 6–11, and 16/17 (u.flashed-USB boards).
-- **Power:** USB-C wall supply or powerbank. Budget: ESP32 with BLE
-  active ~80–240 mA, nRF24 RX ~25 mA each → ~200–300 mA typical. A
-  devkit's onboard regulator runs this, but the nRF24s brownout-kill
-  cheap setups — the decoupling caps plus a real USB supply are the
-  rule, not optional. Battery option (M5): 18650 + charger module
-  gives ~8–12 h.
+- **Power:** USB-C wall supply or powerbank; the nRF24s run off the
+  devkit's 3.3 V pin. That is safe *because this device only
+  receives*: RX is ~12–16 mA/module, ~30 mA total for both — trivial
+  for the onboard regulator. The brownout folklore around nRF24s is
+  about TX (115 mA bursts; PA modules worse), which this design never
+  does on those radios. The real rail hazard is the ESP32's own
+  240–500 mA radio bursts coupling noise into the shared 3.3 V rail —
+  worth a dB or two of receive sensitivity, handled by the decoupling
+  caps at each module and a quality supply. Budget: ~200–300 mA
+  board-total with BLE active; M0 verifies regulator headroom on the
+  actual board. Battery option (M5): 18650 + charger module gives
+  ~8–12 h.
 - **Antenna placement:** the two modules at opposite ends of the
   enclosure, antennas clear of metal and of each other by a few cm.
   Two spatially separated antennas are the point: simultaneous coverage
