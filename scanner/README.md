@@ -15,3 +15,19 @@ USB-tethered to a phone (or any host); the device emits no RF.
   # flash + watch the record stream:
   nix develop -c bash -c 'cd scanner/firmware && pio run -e scanner-usb -t upload && pio device monitor'
   ```
+
+- `app/` — the Android companion (React Native, bare gradle project in
+  `app/android/`). It reads the record stream over USB Host serial
+  (native Kotlin module over usb-serial-for-android), parses PROTOCOL.md,
+  and does all interpretation client-side: device table, air-glitch
+  folding, company-ID/service-UUID/OUI lookups (bundled IEEE dataset,
+  regenerate with `npm run gen-oui`). Dev:
+
+  ```sh
+  nix develop -c bash -c 'cd scanner/app && npm ci && npx jest'
+  # run on a device with the scanner attached (needs system Android SDK):
+  nix develop -c bash -c 'cd scanner/app && npm run android'
+  ```
+
+- `release/` — signing setup + guided APK release (same sideload flow as
+  super-badger; see `release/README.md`).

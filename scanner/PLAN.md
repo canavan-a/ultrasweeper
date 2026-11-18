@@ -234,15 +234,24 @@ records, Grafana/SQLite on the server, no phone needed — decide at M4.
   records and PWR — read happily by `picocom`/a script, with no app
   anywhere.* Also wire PIR (one ISR, one record type) — cheap now,
   painful to retrofit.
-- **M2 — plug it into the phone.** Same record stream over USB OTG:
-  first read it with a laptop (`pyserial`), then with a minimal Kotlin
-  reader (`usb-serial-for-android`) on the target phone, which also
-  powers the board. *Done when: 30 min continuous capture read by the
-  phone, zero batch loss, and this particular phone's VBUS sustains
-  the board.*
+  **Done** (bench-verified: stable MACs, Apple/MSVP frames, ASCII names,
+  truncation-tolerant `CRC:S` acceptance all working; `SCANNER_DIAG`
+  strip is the only cleanup left).
+- **M2 — plug it into the phone.** Same record stream over USB OTG.
+  *Done when: 30 min continuous capture read by the phone, zero batch
+  loss, and this particular phone's VBUS sustains the board.*
+  Built directly as the app scaffold rather than a throwaway Kotlin
+  reader: `app/` is a React Native app whose native half is a Kotlin
+  module over `usb-serial-for-android`, and the JS half already parses
+  PROTOCOL.md end-to-end (parser + device table + lookups unit-tested
+  against real bench captures). Done when the first real APK holds a
+  30-min tethered capture with zero batch loss.
 - **M3 — app v0 (Android).** USB-plug-to-scan: live list with vendor
   lookups, SQLite. *Done when: a 30-min walk with the device tethered
-  logs cleanly and shows vendors.*
+  logs cleanly and shows vendors.* Largely absorbed into the M2 app
+  (live classified list: company IDs, service UUIDs, bundled IEEE OUI
+  dataset, glitch folding); remaining piece is persistent history
+  (SQLite), which wants the M4 schema anyway.
 - **M4 — the police view.** Classifier + map pins + per-device
   history + PIR timeline. *Done when: field sessions answer "was
   police activity nearby, when" from the app alone.*
