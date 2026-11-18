@@ -33,7 +33,8 @@ input. That's the whole product.
     PIR in ───── │   │  CE1/CS1       │                  │
     PIR out ───► │   ├─ CE2/CS2 ──────┴─ nRF24 #B ── ant │   ← ch 38
                  └───────────────────────────────────────┘
-                       BLE GATT ⟷ phone app (ESP32 radio)
+                   USB-C ⟷ phone app (data + power, primary)
+                   BLE GATT ⟷ phone app (untethered, optional)
 ```
 
 - **Boards/parts:** `esp32dev` (ESP32-D0WDQ6 devkit — same board
@@ -41,6 +42,18 @@ input. That's the whole product.
   +20 dBm variants are a drop-in range upgrade, same SPI), HC-SR501
   PIR, 10 µF + 0.1 µF decoupling caps at each nRF24's VCC (nRF24s
   need these, more than any other part here).
+- **Phone link via USB (primary).** The devkit's onboard USB-UART
+  bridge (CP2102/CH340) is itself a USB *device*; an Android phone in
+  USB-host/OTG mode enumerates it as a plain serial port and the
+  firmware just writes to UART0 — the same stream M1 prints. No
+  special ESP feature needed, and the same cable powers the board.
+  Production option: an ESP32-**S3** devkit has native USB CDC (no
+  bridge in the loop, true `COM` device, identical firmware idiom via
+  `board = esp32s3-devkit`) — same PlatformIO conventions, decide at
+  M5. Caveat to verify at M0: phone USB-host VBUS is spec'd 100–500 mA
+  and some phones throttle; our ~200–300 mA budget usually fits, and a
+  powered USB-C hub or powerbank (data-only to the phone) is the
+  fallback if a particular phone starves it.
 - **Wiring (final pins in `mappings.md` when built):** both modules
   share the hardware VSPI bus (SCK 18, MISO 19, MOSI 23); separate
   CE/CSN pairs, e.g. A: CE 4 / CSN 5, B: CE 2 / CSN 15. The RF24
@@ -109,13 +122,20 @@ scanner can show "how busy is 2.4 GHz right now" for free.
 ## 4. Firmware (`scanner/firmware/`, PlatformIO, repo conventions)
 
 - Environments in one `platformio.ini`:
-  - `scanner-ble` — the product build: dual-nRF sensing + ESP32 GATT
-    peripheral the phone connects to. The ESP32's own radio is not
-    used for sensing, so this is plain stable peripheral mode.
+  - `scanner-usb` — the primary build: dual-nRF sensing, records out
+    UART0 to the onboard USB bridge; the phone (or any laptop) is the
+    USB host. Simplest, fastest, zero radio protocols in the data
+    path — the M1 stream *is* the product transport.
+  - `scanner-ble` — untethered build: same sensing, records over an
+    ESP32 GATT peripheral the phone pairs with. The ESP32's own radio
+    is not used for sensing, so this is plain stable peripheral mode.
+    For pocket/walk posture, where being cable-free matters more than
+    the cable's robustness.
   - `scanner-wifi` — same sensing, pushes records over WebSocket to
     a home server/laptop: the dev and desktop-dock build.
   - All pins, channels, PWR floor, dedup intervals as `build_flags`;
-    sources stay generic (horus-3 idiom).
+    sources stay generic (horus-3 idiom). The record stream is
+    identical in all three; transport is the only per-env difference.
 - **Passive only**: the nRF24s never transmit. The scanner cannot be
   detected by anything it watches.
 - **Buffering**: static ring buffer, no heap; ~40 B/record, 2 KB ≈
@@ -137,7 +157,11 @@ replaces MACs with per-app UUIDs and guts the lookup story (iOS would
 be a later reduced variant). Native Kotlin: background service + list
 + map. All interpretation lives here:
 
-1. Connect/reconnect, bond, show link age and buffer/overflow stats.
+1. **Link**: USB-serial via `usb-serial-for-android` (enumerates the
+   devkit's CP2102/CH340 or an S3's native CDC on plug-in; Android
+   USB-host permission dialog once per device) — the primary path.
+   BLE GATT client for the untethered build. Show link type/age and
+   buffer/overflow stats.
 2. Decode raw AD; offline IEEE OUI table (SQLite) for MAC→vendor.
 3. **Police classifier** — editable rule list, seeded from the
    research: company ID `0x034D`/`0xFC81` or OUI `00:25:DF` → *Axon
@@ -168,18 +192,22 @@ records, Grafana/SQLite on the server, no phone needed — decide at M4.
   its decoded records, PWR, and the two modules' capture rates are
   comparable.* Also wire PIR (one ISR, one record type) — cheap now,
   painful to retrofit.
-- **M2 — carry it.** GATT batches to a test client (`bleak` script or
-  nRF Connect). *Done when: 30 min continuous capture, zero batch loss
-  at desk distances.*
-- **M3 — app v0 (Android).** Connect, live list with vendor lookups,
-  SQLite. *Done when: a 30-min walk with the device logs cleanly and
-  shows vendors.*
+- **M2 — plug it into the phone.** Same record stream over USB OTG:
+  first read it with a laptop (`pyserial`), then with a minimal Kotlin
+  reader (`usb-serial-for-android`) on the target phone, which also
+  powers the board. *Done when: 30 min continuous capture read by the
+  phone, zero batch loss, and this particular phone's VBUS sustains
+  the board.*
+- **M3 — app v0 (Android).** USB-plug-to-scan: live list with vendor
+  lookups, SQLite. *Done when: a 30-min walk with the device tethered
+  logs cleanly and shows vendors.*
 - **M4 — the police view.** Classifier + map pins + per-device
   history + PIR timeline. *Done when: field sessions answer "was
   police activity nearby, when" from the app alone.*
 - **M5 — product-ize.** Enclosure (shelf-by-window posture), battery
-  option, auto-reconnect/pairing UX, CSV share, optional PA+LNA
-  module upgrade, optional SD logging.
+  option, `scanner-ble` untethered build, ESP32-S3 native-USB board
+  swap (one cable, no bridge), CSV share, optional PA+LNA module
+  upgrade, optional SD logging.
 
 ## 7. Risks
 
@@ -190,6 +218,7 @@ records, Grafana/SQLite on the server, no phone needed — decide at M4.
 | Adv PDUs > 32 B truncate at the nRF24 payload limit | Header + MAC + first ~21 AD bytes survive — exactly where OUI/company-ID signatures live; flag truncation. |
 | No BLE5 2M/Coded extended advertising on nRF24 | Body cams and legacy police gear use legacy 1M adv; survey mode still sees ext-adv energy; revisit front-end only if a real target needs it. |
 | nRF24 brownouts/RF saturation on shared 3.3 V rail | Caps at each module, quality supply, M0 exists to find this at the bench not in the field. |
+| Phone USB-host VBUS throttles (< board budget) | Verify per-phone at M2; powered USB-C hub or powerbank + data-only to phone; S3 native USB is the lower-draw production path. |
 | Two nRF24s near each other (self-interference) | They only receive; antennas at opposite ends of the enclosure; verify capture rates in M1. |
 | Target devices randomize MACs | Classify on AD payload, keep raw AD forever. |
 | iOS lacks MAC access | Android-first; iOS later as reduced variant. |
