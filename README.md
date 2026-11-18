@@ -14,9 +14,10 @@ and the same hardware idiom.
                  them, blanketing the whole Bluetooth band (2400-2480 MHz)
                  including the three advertising channels.
                  See bluetooth/README.md.
-    detector/    BLE detector + phone "police app" (planned): ESP32 sniffs
-                 advertisements with RSSI, the phone does vendor lookups,
-                 classification, and map pins. See detector/PLAN.md.
+    detector/    BLE detector + phone "police app" (planned): the jammer's
+                 own nRF24 modules run in reverse as a receive array on the
+                 BLE advertising channels; the phone app does vendor
+                 lookups, classification, and map pins. See detector/PLAN.md.
 
 More sweepers to come; each gets a directory here when it exists.
 
