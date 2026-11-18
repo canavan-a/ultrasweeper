@@ -2,9 +2,16 @@
 
 Two nRF24L01 modules on an ESP32 act as hopping constant carriers across
 2.4 GHz: one sweeps channels 40–58 (2440–2458 MHz at 2 Mbps), the other
-60–78 (2460–2478 MHz), hopping
+60–80 (2460–2480 MHz), hopping
 randomly as fast as the SPI bus allows. The ESP32's own BLE/WiFi radios are
 deinitialized at boot so they don't contaminate the band.
+
+The goal is jamming Bluetooth: BLE occupies 2402–2480 MHz (3 advertising
+channels at 2402/2426/2480, 37 data channels at 2404–2476 on even nRF
+channels). This device covers the upper half; the `sweeper-low` build covers
+channels 0–18 and 20–38 (2400–2438). Two devices together blanket the whole
+BLE band, including the advertising channels that BLE's adaptive frequency
+hopping cannot escape.
 
 ## Layout
 
