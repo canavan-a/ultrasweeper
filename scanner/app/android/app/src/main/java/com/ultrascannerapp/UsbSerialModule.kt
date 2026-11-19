@@ -66,12 +66,16 @@ class UsbSerialModule(private val reactCtx: ReactApplicationContext) :
     reactCtx.registerReceiver(hotplugReceiver, filter)
   }
 
-  override fun dispose() {
+  // RN 0.75 has no dispose() on ReactContextBaseJavaModule; this is the
+  // hook legacy modules still get (same one @react-native-async-storage
+  // uses). Unregister first so a JS reload can't leak receivers.
+  @Suppress("OVERRIDE_DEPRECATION")
+  override fun onCatalystInstanceDestroy() {
     try {
       reactCtx.unregisterReceiver(hotplugReceiver)
     } catch (_: Exception) {}
     closePort()
-    super.dispose()
+    super.onCatalystInstanceDestroy()
   }
 
   private fun sendEvent(name: String, payload: com.facebook.react.bridge.WritableMap) {
@@ -84,7 +88,7 @@ class UsbSerialModule(private val reactCtx: ReactApplicationContext) :
 
   private fun allDrivers(): List<UsbSerialDriver> {
     val um = reactCtx.getSystemService(Context.USB_SERVICE) as UsbManager
-    return UsbSerialProber.getDefaultProber().probeDrivers(um.deviceList.values.toList())
+    return UsbSerialProber.getDefaultProber().findAllDrivers(um)
   }
 
   @ReactMethod
@@ -96,9 +100,16 @@ class UsbSerialModule(private val reactCtx: ReactApplicationContext) :
         // deviceName (e.g. /dev/bus/usb/001/002) is what open() keys on and
         // what the DETACHED broadcast carries, so hot-plug can match it.
         m.putString("deviceId", d.device.deviceName)
+        // UsbSerialDriver has no name of its own; label the entry from the
+        // USB descriptors, falling back to VID:PID when the chip has none
+        // (bare CH340 clones do not).
         m.putString(
             "productName",
-            d.device.productName ?: "${d.device.manufacturerName ?: "unknown"} ${d.driverName}")
+            d.device.productName
+                ?: "%s %04x:%04x".format(
+                    d.device.manufacturerName ?: "USB serial",
+                    d.device.vendorId,
+                    d.device.productId))
         m.putInt("vendorId", d.device.vendorId)
         m.putInt("productId", d.device.productId)
         list.pushMap(m)
@@ -157,9 +168,17 @@ class UsbSerialModule(private val reactCtx: ReactApplicationContext) :
 
   private fun doOpen(driver: UsbSerialDriver, baud: Int, promise: Promise) {
     closePort()
+    // open() takes a UsbDeviceConnection, obtained from the UsbManager;
+    // the port closes that connection again in close().
+    val um = reactCtx.getSystemService(Context.USB_SERVICE) as UsbManager
+    val connection = um.openDevice(driver.device)
+    if (connection == null) {
+      promise.reject("open_failed", "could not open a USB connection to ${driver.device.deviceName}")
+      return
+    }
+    val p = driver.ports[0]
     try {
-      val p = driver.ports[0]
-      p.open()
+      p.open(connection)
       p.setParameters(baud, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
       // Keep DTR/RTS low: the auto-reset circuit on ESP32 devkits reacts to
       // those lines, and the app must not reboot (or boot-loop) the scanner
@@ -170,6 +189,9 @@ class UsbSerialModule(private val reactCtx: ReactApplicationContext) :
       } catch (_: IOException) {}
       port = p
     } catch (e: Exception) {
+      try {
+        connection.close()
+      } catch (_: Exception) {}
       promise.reject("open_failed", e)
       return
     }
