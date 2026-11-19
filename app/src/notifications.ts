@@ -68,8 +68,25 @@ export function ensureChannels(): Promise<void> {
   return ensured;
 }
 
-/** Ask for POST_NOTIFICATIONS (Android 13+); resolves true when allowed. */
+/**
+ * Make sure POST_NOTIFICATIONS (Android 13+) is granted; resolves true when
+ * notifications are allowed.
+ *
+ * Checks first and only asks when not yet allowed. Notifee's
+ * requestPermission() resolves only from the Activity's permission-result
+ * callback, and Android 17 skips the request entirely when there is nothing
+ * left to ask for (logcat: "No requestable permission in the request."), so
+ * the promise never settled and Test alert waited on it forever. The
+ * timeout covers any other path where that callback doesn't arrive.
+ */
 export async function requestNotificationPermission(): Promise<boolean> {
-  const res = await notifee.requestPermission();
-  return res.authorizationStatus >= AuthorizationStatus.AUTHORIZED;
+  const allowed = (status: AuthorizationStatus) => status >= AuthorizationStatus.AUTHORIZED;
+  const current = await notifee.getNotificationSettings();
+  if (allowed(current.authorizationStatus)) return true;
+  const asked = await Promise.race([
+    notifee.requestPermission(),
+    new Promise<null>(resolve => setTimeout(() => resolve(null), 15_000)),
+  ]);
+  if (asked) return allowed(asked.authorizationStatus);
+  return allowed((await notifee.getNotificationSettings()).authorizationStatus);
 }
