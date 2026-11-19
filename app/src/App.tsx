@@ -2,6 +2,7 @@ import React, {useCallback, useEffect, useState} from 'react';
 import {BackHandler, Platform, Pressable, SafeAreaView, StatusBar, StyleSheet, Text, View} from 'react-native';
 
 import {Icon} from './components/Icon';
+import {ensureChannels} from './notifications';
 import {Route} from './routes';
 import {ScanScreen} from './screens/ScanScreen';
 import {SettingsScreen} from './screens/SettingsScreen';
@@ -26,6 +27,12 @@ function AppInner(): React.JSX.Element {
   // The scan session lives up here so opening Settings never drops the
   // connection or clears the device table.
   const engine = useScanEngine();
+
+  // Create the notification channels up front so the first police alert
+  // (or Test alert) doesn't wait on it; see notifications.ts.
+  useEffect(() => {
+    ensureChannels().catch(() => {});
+  }, []);
 
   const navigate = useCallback((next: Route) => setRoute(next), []);
   const goBack = useCallback(() => navigate({name: 'scan'}), [navigate]);

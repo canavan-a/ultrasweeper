@@ -64,21 +64,35 @@ export function onSerialState(cb: (e: SerialStateEvent) => void): () => void {
 // charCode N is exactly right for the line parser.
 const B64CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
+// Table-driven, and the output string is built from byte blocks rather than
+// one += per character: this runs on every serial chunk (hundreds per
+// scanner batch) on Hermes, which has no JIT, so it has to be cheap.
+const B64_LOOKUP = (() => {
+  const t = new Int16Array(128).fill(-1);
+  for (let i = 0; i < B64CHARS.length; i++) t[B64CHARS.charCodeAt(i)] = i;
+  return t;
+})();
+const BLOCK = 4096;
+
 export function decodeBase64Ascii(b64: string): string {
-  let out = '';
+  const bytes = new Array<number>(Math.ceil((b64.length * 3) / 4));
+  let n = 0;
   let acc = 0;
   let bits = 0;
   for (let i = 0; i < b64.length; i++) {
-    const c = b64[i];
-    if (c === '=' || c === '\n' || c === '\r') continue;
-    const v = B64CHARS.indexOf(c);
-    if (v < 0) continue; // skip anything malformed rather than throwing
-    acc = (acc << 6) | v;
+    const code = b64.charCodeAt(i);
+    const v = code < 128 ? B64_LOOKUP[code] : -1;
+    if (v < 0) continue; // '=', CR/LF and anything malformed are skipped
+    acc = ((acc << 6) | v) & 0xffffff;
     bits += 6;
     if (bits >= 8) {
       bits -= 8;
-      out += String.fromCharCode((acc >> bits) & 0xff);
+      bytes[n++] = (acc >> bits) & 0xff;
     }
+  }
+  let out = '';
+  for (let i = 0; i < n; i += BLOCK) {
+    out += String.fromCharCode.apply(null, bytes.slice(i, Math.min(i + BLOCK, n)));
   }
   return out;
 }

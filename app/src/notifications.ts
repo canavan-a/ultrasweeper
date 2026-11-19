@@ -31,31 +31,36 @@ export const SMALL_ICON = 'ic_stat_scanner';
 
 let ensured: Promise<void> | null = null;
 
+// One createChannels() call, not one per channel: every native call queues
+// behind the scanner's serial events on a busy JS thread, so sequential
+// calls added up to a visible delay before the first alert. App.tsx also
+// calls this at startup so an alert never waits on it.
 export function ensureChannels(): Promise<void> {
   if (!ensured) {
-    ensured = (async () => {
-      await notifee.createChannel({
+    const channels: Parameters<typeof notifee.createChannels>[0] = [
+      {
         id: CH_SCANNING,
         name: 'Background scanning',
         description: 'Shown while the scanner keeps listening with the app in the background.',
         importance: AndroidImportance.LOW,
-      });
-      for (const sound of [true, false]) {
-        for (const vibrate of [true, false]) {
-          const what = [sound && 'chime', vibrate && 'vibration'].filter(Boolean).join(' + ') || 'silent';
-          await notifee.createChannel({
-            id: alertChannelId(sound, vibrate),
-            name: `Police alerts (${what})`,
-            description: 'A police device was heard nearby.',
-            importance: AndroidImportance.HIGH,
-            visibility: AndroidVisibility.PUBLIC,
-            sound: sound ? PING_SOUND : undefined,
-            vibration: vibrate,
-            vibrationPattern: vibrate ? PING_VIBRATION : undefined,
-          });
-        }
+      },
+    ];
+    for (const sound of [true, false]) {
+      for (const vibrate of [true, false]) {
+        const what = [sound && 'chime', vibrate && 'vibration'].filter(Boolean).join(' + ') || 'silent';
+        channels.push({
+          id: alertChannelId(sound, vibrate),
+          name: `Police alerts (${what})`,
+          description: 'A police device was heard nearby.',
+          importance: AndroidImportance.HIGH,
+          visibility: AndroidVisibility.PUBLIC,
+          sound: sound ? PING_SOUND : undefined,
+          vibration: vibrate,
+          vibrationPattern: vibrate ? PING_VIBRATION : undefined,
+        });
       }
-    })().catch(err => {
+    }
+    ensured = notifee.createChannels(channels).catch(err => {
       ensured = null; // retry next time
       throw err;
     });
