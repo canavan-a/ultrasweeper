@@ -6,11 +6,16 @@ import {policeMatch} from '../src/lookup/police';
 
 const APPLE_BLOB = '42211D0C3F9DEF7002011A17FF4C008908B322C0A803271B18160800EA798AA0';
 
+// Header TxAdd (0x40) follows the address shape unless a test says otherwise,
+// as a real device's header would.
 function frame(mac: string, ...structures: string[]): string {
+  return frameWith(mac, (parseInt(mac.slice(0, 2), 16) & 0xc0) !== 0, ...structures);
+}
+function frameWith(mac: string, random: boolean, ...structures: string[]): string {
   const adva = mac.split(':').reverse().join('');
   const ad = structures.join('');
   const len = (6 + ad.length / 2).toString(16).padStart(2, '0');
-  return `40${len}${adva}${ad}`;
+  return `${random ? '40' : '00'}${len}${adva}${ad}`;
 }
 const ad = (type: number, payloadHex: string) =>
   ((payloadHex.length / 2 + 1).toString(16).padStart(2, '0') + type.toString(16).padStart(2, '0')).toUpperCase() +
@@ -18,14 +23,59 @@ const ad = (type: number, payloadHex: string) =>
 const name = (s: string) => ad(0x09, Buffer.from(s, 'ascii').toString('hex').toUpperCase());
 
 function match(mac: string, ...structures: string[]) {
-  return policeMatch(mac, classify(mac, frame(mac, ...structures)));
+  const f = frame(mac, ...structures);
+  return policeMatch(mac, classify(mac, f), f);
 }
+const ascii = (s: string) => Buffer.from(s, 'ascii').toString('hex').toUpperCase();
 
 describe('policeMatch', () => {
-  it('flags the Axon company ID even on a rotating random address', () => {
-    const m = match('C3:11:22:33:44:55', ad(0xff, '4D030102'));
+  it('flags the Axon company ID with a serial payload, even on a random address', () => {
+    const m = match('C3:11:22:33:44:55', ad(0xff, '4D0302' + Buffer.from('X870054FW').toString('hex').toUpperCase()));
     expect(m).toMatchObject({label: 'Axon', confidence: 'likely'});
     expect(m!.reasons[0]).toContain('0x034D');
+  });
+
+  it('treats 0x034D without the serial shape as only possible', () => {
+    expect(match('C3:11:22:33:44:60', ad(0xff, '4D030102'))).toMatchObject({confidence: 'possible'});
+  });
+
+  it('decodes the real BWCDEVICE advert (tag reversed inside a 128-bit UUID)', () => {
+    // On-air bytes reported by All Cameras Are Beacons: flags, then AD 0x21
+    // whose UUID reads "AXJANUSBWCDEVICE" big-endian, then payload 01.
+    const m = match('D8:1F:65:01:02:03', '020106', '1221454349564544435742535 54E414A584101'.replace(/ /g, ''));
+    expect(m).toMatchObject({label: 'Axon body camera', confidence: 'likely'});
+  });
+
+  it('flags the METROPOLISDEVICE tag as a possible Axon device', () => {
+    const f = '020106' + '1221' + '45434956454453494C4F504F5254454D' + '01' + '0512A0002003';
+    expect(match('C3:22:33:44:55:66', f)).toMatchObject({label: 'Axon device', confidence: 'possible'});
+  });
+
+  it('reads the address type from the header, not the address shape', () => {
+    // D8:1F:65 looks random-static by its top bits but is a public Axon block.
+    const mac = 'D8:1F:65:0A:0B:0C';
+    expect(policeMatch(mac, classify(mac, frameWith(mac, false, ad(0x01, '06'))))).toMatchObject({confidence: 'likely'});
+    expect(policeMatch(mac, classify(mac, frameWith(mac, true, ad(0x01, '06'))))).toBeNull();
+  });
+
+  it('flags Axon service UUIDs as service data or in a service list', () => {
+    // FE6B service data (UUID little-endian on air), random address
+    expect(match('C3:11:22:33:44:56', ad(0x16, '6BFE0102'))).toMatchObject({label: 'Axon', confidence: 'likely'});
+    // FE6C in a complete 16-bit service UUID list
+    expect(match('C3:11:22:33:44:57', ad(0x03, '0F186CFE'))!.reasons).toContain('Axon service UUID FE6C');
+    expect(match('C3:11:22:33:44:58', ad(0x03, '81FC'))).toMatchObject({confidence: 'likely'});
+  });
+
+  it('no longer treats 0xFC81 as a company ID', () => {
+    expect(match('C3:11:22:33:44:59', ad(0xff, '81FC0102'))).toBeNull();
+  });
+
+  it('flags the BWCDEVICE body-cam tag, even in 128-bit service data', () => {
+    const uuid128 = '00112233445566778899AABBCCDDEEFF';
+    const m = match('C3:11:22:33:44:5A', ad(0x21, uuid128 + ascii('BWCDEVICE')));
+    expect(m).toMatchObject({label: 'Axon body camera', confidence: 'likely'});
+    // a tag cut off by the 32-byte capture doesn't count
+    expect(match('C3:11:22:33:44:5B', ad(0x21, uuid128 + ascii('BWCDEV')))).toBeNull();
   });
 
   it('flags the Axon OUI on a public address', () => {
@@ -62,6 +112,32 @@ describe('policeMatch', () => {
     const m = match('00:1D:96:01:02:03', name('Axon Body 3'));
     expect(m).toMatchObject({label: 'Axon', confidence: 'likely'});
     expect(m!.reasons).toHaveLength(2);
+  });
+
+  it('flags Flock Safety battery and Raven signatures', () => {
+    expect(match('C3:00:00:00:01:01', name('FS Ext Battery'))).toMatchObject({label: 'Flock Safety', confidence: 'likely'});
+    expect(match('C3:00:00:00:01:02', name('Penguin-0123456789'))).toMatchObject({confidence: 'likely'});
+    // battery 128-bit service UUID, little-endian on air
+    const le = 'E8CCBB38953246A89FE51814DF172E6F'.match(/../g)!.reverse().join('');
+    expect(match('C3:00:00:00:01:03', ad(0x07, le))).toMatchObject({label: 'Flock Safety', confidence: 'likely'});
+    expect(match('C3:00:00:00:01:04', ad(0x03, '0031'))).toMatchObject({
+      label: 'Flock Raven (gunshot sensor)',
+      confidence: 'likely',
+    });
+  });
+
+  it('needs the Flock module ID to trust an FS- name, and not the reverse', () => {
+    expect(match('C3:00:00:00:02:01', name('FS-BEC46A'))).toMatchObject({confidence: 'possible'});
+    expect(match('C3:00:00:00:02:02', name('FS-BEC46A'), ad(0xff, 'C8090000'))).toMatchObject({confidence: 'likely'});
+    expect(match('C3:00:00:00:02:03', ad(0xff, 'C8090000'))).toMatchObject({confidence: 'possible'});
+    expect(match('C3:00:00:00:02:04', name('FS-100'))).toBeNull();
+    // removed upstream as a phone false positive
+    expect(match('C3:00:00:00:02:05', name('0102000000'))).toBeNull();
+  });
+
+  it('flags Motorola capture-only IDs as possible', () => {
+    expect(match('C3:00:00:00:03:01', ad(0xff, 'EC040000'))).toMatchObject({label: 'Motorola Solutions', confidence: 'possible'});
+    expect(match('C3:00:00:00:03:02', ad(0x03, '8EFD'))).toMatchObject({confidence: 'possible'});
   });
 
   it('leaves ordinary devices alone', () => {

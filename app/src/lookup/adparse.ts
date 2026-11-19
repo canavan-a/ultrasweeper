@@ -75,8 +75,16 @@ export interface Classification {
   name?: string;
   /** SIG company IDs from Manufacturer Specific Data, in the order seen */
   companyIds: number[];
+  /** Manufacturer Specific Data: company ID + payload hex after the ID */
+  manufacturerData: {company: number; data: string}[];
   /** 16-bit service UUIDs seen (hex, e.g. "F7FD") */
   serviceUuids: string[];
+  /**
+   * 128-bit service UUIDs seen (listed or as service data), canonical
+   * big-endian form "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX" uppercase.
+   * Only complete UUIDs: one cut off by the capture is dropped.
+   */
+  serviceUuids128: string[];
   /** true when AdvA is a random address (most phones rotate these) */
   randomAddress: boolean;
 }
@@ -95,7 +103,20 @@ function ascii(hex: string): string {
  * then SIG-assigned service UUIDs, then address-block OUI.
  */
 export function classify(mac: string, adHex: string): Classification {
-  const out: Classification = {labels: [], companyIds: [], serviceUuids: [], randomAddress: false};
+  const out: Classification = {
+    labels: [],
+    companyIds: [],
+    manufacturerData: [],
+    serviceUuids: [],
+    serviceUuids128: [],
+    randomAddress: false,
+  };
+  const add128 = (leHex: string) => {
+    if (leHex.length < 32) return;
+    const be = (hexBytes(leHex.slice(0, 32)).reverse().join('')).toUpperCase();
+    const uuid = `${be.slice(0, 8)}-${be.slice(8, 12)}-${be.slice(12, 16)}-${be.slice(16, 20)}-${be.slice(20)}`;
+    if (!out.serviceUuids128.includes(uuid)) out.serviceUuids128.push(uuid);
+  };
   const macBytes = mac.split(':').map(p => parseInt(p, 16));
   // BLE public/identity addresses have the top two bits of the
   // most-significant byte clear; everything else (resolvable private
@@ -105,6 +126,11 @@ export function classify(mac: string, adHex: string): Classification {
 
   const pdu = parsePdu(adHex);
   if (pdu) {
+    // The advertising PDU header says it outright: TxAdd (bit 6) set means
+    // AdvA is a random address. Better than the top-bits guess above, which
+    // misreads public addresses whose first byte has high bits set (Axon's
+    // D8:1F:65 block, for one).
+    out.randomAddress = (parseInt(adHex.slice(0, 2), 16) & 0x40) !== 0;
     for (const s of pdu.structures) {
     switch (s.type) {
       case 0x08: // Shortened Local Name
@@ -138,6 +164,7 @@ export function classify(mac: string, adHex: string): Classification {
         if (!out.companyIds.includes(company)) {
           out.companyIds.push(company);
         }
+        out.manufacturerData.push({company, data: s.data.slice(4)});
         const vendor = COMPANIES[company];
         if (vendor) {
           out.vendor = out.vendor ?? vendor;
@@ -158,6 +185,15 @@ export function classify(mac: string, adHex: string): Classification {
         }
         break;
       }
+      case 0x06: // 128-bit Service UUIDs (Incomplete)
+      case 0x07: {
+        // 128-bit Service UUIDs (Complete), little-endian on air
+        for (let i = 0; i + 32 <= s.data.length; i += 32) add128(s.data.slice(i, i + 32));
+        break;
+      }
+      case 0x21: // Service Data - 128-bit UUID (the UUID leads the payload)
+        add128(s.data);
+        break;
       case 0x02: // Type for 16-bit Service UUIDs (Incomplete)
       case 0x03: {
         // Type for 16-bit Service UUIDs (Complete)

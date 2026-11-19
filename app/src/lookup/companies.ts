@@ -20,10 +20,14 @@ export const COMPANIES: Record<number, string> = {
   0x004C: 'Apple',
   0x0075: 'Samsung Electronics America',
   0x00E0: 'Google',
-  // Axon: two company IDs are associated with Axon devices; both still
-  // need confirming from a real patrol capture (PLAN.md open question).
-  0x034D: 'Axon (unverified)',
-  0xFC81: 'Axon Mobile (unverified)',
+  // Axon (registered as TASER International). 0xFC81, once listed here as a
+  // second Axon company ID, is an Axon 16-bit service UUID instead; see
+  // lookup/police.ts for the service UUIDs and the body-cam tag.
+  0x034D: 'Axon (TASER International)',
+  // Motorola Solutions; seen in All Cameras Are Beacons capture builds.
+  0x04EC: 'Motorola Solutions',
+  // XUNTONG: the Bluetooth module in Flock Safety gear (also sold to others).
+  0x09C8: 'XUNTONG (Flock module)',
 };
 
 export function companyName(id: number): string | undefined {

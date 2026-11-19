@@ -115,8 +115,9 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
             <View style={styles.empty}>
               <Text style={styles.emptyTitle}>No police devices heard</Text>
               <Text style={styles.emptyText}>
-                Nothing in range matches the police rules (Axon company IDs and
-                OUI, public-safety vendor OUIs, Axon/TASER names). Devices that
+                Nothing in range matches the police rules (Axon body-cam tag,
+                IDs and OUIs; Motorola Solutions; Flock Safety batteries and
+                Raven; other public-safety vendor OUIs and names). Devices that
                 rotate random addresses are only caught by their payload.
               </Text>
             </View>

@@ -93,7 +93,7 @@ function rebuildView(): void {
       // mutate under the renderer later
       channels: new Set(d.channels),
       cls,
-      police: policeMatch(d.mac, cls),
+      police: policeMatch(d.mac, cls, d.ad),
     };
   });
   checkPoliceAlerts(view);
