@@ -30,7 +30,7 @@ export interface DeviceEntry {
   lastSeen: number;
   /** sightings for this exact MAC, including ones folded into a twin */
   sightings: number;
-  /** count of sightings that were glitch-folked in from other MACs */
+  /** count of sightings that were glitch-folded in from other MACs */
   glitchSightings: number;
 }
 

@@ -95,9 +95,11 @@ function ascii(hex: string): string {
 export function classify(mac: string, adHex: string): Classification {
   const out: Classification = {labels: [], serviceUuids: [], randomAddress: false};
   const macBytes = mac.split(':').map(p => parseInt(p, 16));
-  // BLE random addresses have the top two bits of the most-significant
-  // byte set; static/identity addresses do not, and only those carry OUI.
-  out.randomAddress = (macBytes[0] & 0xc0) === 0xc0;
+  // BLE public/identity addresses have the top two bits of the
+  // most-significant byte clear; everything else (resolvable private
+  // 0b01, static 0b11, and the 0b10 oddities real trackers emit) is
+  // randomized or synthetic, and its first three bytes prove nothing.
+  out.randomAddress = (macBytes[0] & 0xc0) !== 0x00;
 
   const pdu = parsePdu(adHex);
   if (pdu) {

@@ -151,7 +151,9 @@ export function parseLine(line: string): ParsedRecord | null {
   if (mac) {
     const f = fields(trimmed);
     const ch = num(f, 'CH');
-    const crc = (f.get('CRC') ?? '1') as MacRecord['crc'];
+    // A record without a CRC field is weakest-proof, not strongest:
+    // default to structure-only rather than claiming a verified frame.
+    const crc = (f.get('CRC') ?? 'S') as MacRecord['crc'];
     return {
       type: 'mac',
       mac: mac[1],

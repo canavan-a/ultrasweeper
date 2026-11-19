@@ -147,7 +147,7 @@ class UsbSerialModule(private val reactCtx: ReactApplicationContext) :
         }
     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
       reactCtx.registerReceiver(
-          receiver, IntentFilter(ACTION_PERMISSION), Context.RECEIVER_EXPORTED)
+          receiver, IntentFilter(ACTION_PERMISSION), Context.RECEIVER_NOT_EXPORTED)
     } else {
       @Suppress("UnspecifiedRegisterReceiverFlag")
       reactCtx.registerReceiver(receiver, IntentFilter(ACTION_PERMISSION))

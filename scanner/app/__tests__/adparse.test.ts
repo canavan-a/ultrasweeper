@@ -55,16 +55,21 @@ describe('classify', () => {
     expect(c.name).toContain('Bose QC Ultra Headp');
   });
 
-  it('uses OUI only for static addresses', () => {
+  it('uses OUI only for public/identity addresses', () => {
     const staticC = classify('00:25:DF:11:22:33', '');
     expect(staticC.randomAddress).toBe(false);
     expect(staticC.vendor).toBe('Axon Enterprise, Inc.');
     expect(staticC.labels).toContain('OUI-registered: Axon Enterprise, Inc.');
 
-    const randC = classify('D4:5F:6E:11:22:33', '');
-    expect(randC.randomAddress).toBe(true);
-    // D4 is an OUI block too (Apple) but the address is randomized, so the
-    // first three bytes prove nothing and must not be looked up.
-    expect(randC.vendor).toBeUndefined();
+    // Every top-two-bits-nonzero form is random-ish and must be skipped.
+    // The prefixes below are all genuinely ASSIGNED in the bundled OUI
+    // registry, so a lookup here would confidently invent a vendor from a
+    // rotating address: 40: (resolvable-private 0b01), 80: (the 0b10
+    // form), F0: (static 0b11 — the same block F01898 proves Apple owns).
+    for (const mac of ['F0:1B:24:11:22:33', '40:01:07:33:44:55', '80:00:10:F8:12:6F']) {
+      const c = classify(mac, '');
+      expect(c.randomAddress).toBe(true);
+      expect(c.vendor).toBeUndefined();
+    }
   });
 });
