@@ -175,12 +175,14 @@ bold "==> Building signed release APK"
 
 if [[ ! -d "$APP_DIR/node_modules" ]]; then
 	info "node_modules missing — running npm ci"
-	( cd "$APP_DIR" && npm ci )
+	( cd "$APP_DIR" && npm ci < /dev/null )
 fi
 
 (
 	cd "$APP_ANDROID"
-	./gradlew --no-daemon assembleRelease \
+	# </dev/null: gradle must not consume the rest of the scripted stdin —
+	# it would eat the answer to the publish confirmation below.
+	./gradlew --no-daemon assembleRelease < /dev/null \
 		-PversionName="$versionName" \
 		-PversionCode="$versionCode"
 )
