@@ -2,6 +2,13 @@ apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
+repositories {
+    // usb-serial-for-android is published on JitPack (as com.github.mik3y),
+    // not Maven Central — the group id looks Central-legal but does not
+    // resolve there.
+    maven { url "https://jitpack.io" }
+}
+
 /**
  * This is the configuration block to customize your React Native Android app.
  * By default you don't need to apply any configuration, just uncomment the lines you need.
@@ -128,9 +135,10 @@ dependencies {
     implementation("com.facebook.react:react-android")
 
     // Host-side USB serial for the scanner board (CP210x / CH340 / FTDI /
-    // CDC-ACM). Bridged to JS by UsbSerialModule.kt. Published on Maven
-    // Central since 3.5, so no extra repository is needed.
-    implementation "com.hoho.android:usb-serial-for-android:3.8.0"
+    // CDC-ACM). Bridged to JS by UsbSerialModule.kt. Distributed through
+    // JitPack under the com.github.mik3y group (see the repositories block
+    // above); com.hoho.android.* is only its Java package.
+    implementation "com.github.mik3y:usb-serial-for-android:3.8.0"
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
