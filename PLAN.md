@@ -141,7 +141,7 @@ honestly: ESP32 Wi-Fi is 2.4 GHz only (newer Axon vehicle guidance is
 (presence known, name absent); Wi-Fi RX adds ~76 mA while dwelling —
 well inside the radio-off budget since it's a small duty cycle.
 
-## 4. Firmware (`scanner/firmware/`, PlatformIO, repo conventions)
+## 4. Firmware (`firmware/`, PlatformIO, repo conventions)
 
 - Environments in one `platformio.ini`:
   - `scanner-usb` — THE product build: dual-nRF sensing, ESP32 radios
@@ -171,7 +171,7 @@ well inside the radio-off budget since it's a small duty cycle.
   50 records; overflow drops oldest and flags the gap to the app.
 - **Dedup (on-device, transport hygiene only)**: re-report a MAC only
   if its PWR bucket changed or 5 s passed; new MACs report at once.
-- **The wire protocol is a first-class artifact.** `scanner/PROTOCOL.md`
+- **The wire protocol is a first-class artifact.** `PROTOCOL.md`
   is written at M1 as the normative spec — line grammar, field meanings,
   `PROTO=` handshake, error/overflow behavior — and the firmware, the
   phone app, and everything else conform to *it*, not to each other.

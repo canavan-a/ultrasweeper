@@ -44,7 +44,7 @@ export function onDownloadProgress(cb: (p: DownloadProgress) => void): () => voi
 
 // --- GitHub Releases ---
 
-// The app lives in the ultrasweeper monorepo; release.sh tags it with
+// The app lives in the ultrasweeper repo; release.sh tags it with
 // `scanner-v` so several tools can share one repo's Releases without
 // colliding. Until the repo has a GitHub remote this fetch simply 404s and
 // Settings shows the error — the app itself keeps working offline.

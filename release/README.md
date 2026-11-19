@@ -1,4 +1,4 @@
-# scanner/release/
+# release/
 
 Local signing material and the guided release tool for the scanner Android
 app — the same flow as super-badger's `release/`, with the `scanner-v` tag

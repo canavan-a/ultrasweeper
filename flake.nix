@@ -1,5 +1,5 @@
 {
-  description = "ultrasweeper - constant-carrier RF sweepers on ESP32 + nRF24L01 (monorepo)";
+  description = "ultrasweeper scanner - passive BLE police-scanner detector (ESP32 + nRF24L01+) and its Android app";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -11,11 +11,10 @@
     {
       # Firmware builds through PlatformIO rather than Nix derivations: the
       # espressif32 platform and its toolchains are fetched by pio itself.
-      # The dev shell is the only setup step; entering it, `pio run -e
-      # sweeper` (or listener / publisher) must just work from a clean
-      # checkout.
+      # The dev shell is the only setup step; entering it, `cd firmware &&
+      # pio run -e scanner-usb` must just work from a clean checkout.
       #
-      # The Android app (scanner/app) builds through npm/gradle from this
+      # The Android app (app/) builds through npm/gradle from this
       # same shell. Like super-badger's flake, the Android SDK stays
       # system-provided rather than in the shell: gradle expects an
       # installed SDK + accepted licenses, and a release build happens on
