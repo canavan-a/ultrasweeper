@@ -1,10 +1,11 @@
 // The scan screen: USB connect controls, live session stats, and the
 // classified device list. All data comes from the engine (App.tsx owns it);
 // this file is presentation only.
-import React from 'react';
+import React, {useEffect, useState} from 'react';
 import {FlatList, Pressable, StyleSheet, Text, View} from 'react-native';
 
 import type {ScanEngine, ViewDevice} from '../engine';
+import {settingsStore, Settings} from '../settings';
 import {useTheme} from '../theme';
 
 const CRC_LABEL: Record<string, string> = {'1': 'CRC', P: 'partial', S: 'struct'};
@@ -12,6 +13,9 @@ const CRC_LABEL: Record<string, string> = {'1': 'CRC', P: 'partial', S: 'struct'
 export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
   const theme = useTheme();
   const styles = makeStyles(theme);
+  const [filter, setFilter] = useState<Settings['scanFilter']>(settingsStore.get().scanFilter);
+  useEffect(() => settingsStore.subscribe(s => setFilter(s.scanFilter)), []);
+  const chooseFilter = (f: Settings['scanFilter']) => settingsStore.save({...settingsStore.get(), scanFilter: f});
 
   if (!engine.available) {
     // iOS or a dev build without the native module — say so plainly rather
@@ -63,10 +67,21 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
 
   const s = engine.session;
   const st = engine.stats;
+  const policeCount = engine.view.filter(d => d.police).length;
+  // Police matches float to the top (likely before possible), each group
+  // still most-recent-first as the engine sorted it.
+  const rank = (d: ViewDevice) => (!d.police ? 2 : d.police.confidence === 'likely' ? 0 : 1);
+  const shown =
+    filter === 'police' ? engine.view.filter(d => d.police) : [...engine.view].sort((a, b) => rank(a) - rank(b));
+  const filters = [
+    ['all', `All (${engine.view.length})`],
+    ['police', `Police (${policeCount})`],
+  ] as const;
   return (
     <View style={styles.container}>
       <View style={styles.statsRow}>
         <Stat label="devices" value={String(engine.view.length)} />
+        <Stat label="police" value={String(policeCount)} alert={policeCount > 0} />
         <Stat label="batch" value={String(engine.batchCount)} />
         {st ? <Stat label="ok" value={String(st.ok)} /> : null}
         {st ? <Stat label="dup" value={String(st.dup)} /> : null}
@@ -77,19 +92,43 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
         {engine.parseErrors > 0 ? `   ${engine.parseErrors} unparsed lines` : ''}
       </Text>
 
+      <View style={styles.segment} accessibilityRole="tablist">
+        {filters.map(([key, label]) => (
+          <Pressable
+            key={key}
+            style={[styles.segmentTab, filter === key && styles.segmentTabActive]}
+            onPress={() => chooseFilter(key)}
+            accessibilityRole="tab"
+            accessibilityState={{selected: filter === key}}>
+            <Text style={[styles.segmentText, filter === key && styles.segmentTextActive]}>{label}</Text>
+          </Pressable>
+        ))}
+      </View>
+
       <FlatList
-        data={engine.view}
+        data={shown}
         keyExtractor={d => d.mac}
         renderItem={({item}) => <DeviceRow item={item} />}
         style={styles.list}
         ListEmptyComponent={
-          <View style={styles.empty}>
-            <Text style={styles.emptyTitle}>Listening…</Text>
-            <Text style={styles.emptyText}>
-              Connected. The scanner sweeps channels 37/38/39; devices appear as
-              batches arrive.
-            </Text>
-          </View>
+          filter === 'police' ? (
+            <View style={styles.empty}>
+              <Text style={styles.emptyTitle}>No police devices heard</Text>
+              <Text style={styles.emptyText}>
+                Nothing in range matches the police rules (Axon company IDs and
+                OUI, public-safety vendor OUIs, Axon/TASER names). Devices that
+                rotate random addresses are only caught by their payload.
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.empty}>
+              <Text style={styles.emptyTitle}>Listening…</Text>
+              <Text style={styles.emptyText}>
+                Connected. The scanner sweeps channels 37/38/39; devices appear as
+                batches arrive.
+              </Text>
+            </View>
+          )
         }
       />
 
@@ -106,12 +145,12 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
   );
 }
 
-function Stat({label, value}: {label: string; value: string}): React.JSX.Element {
+function Stat({label, value, alert}: {label: string; value: string; alert?: boolean}): React.JSX.Element {
   const theme = useTheme();
   const styles = makeStyles(theme);
   return (
-    <View style={styles.stat}>
-      <Text style={styles.statValue}>{value}</Text>
+    <View style={[styles.stat, alert && styles.statAlert]}>
+      <Text style={[styles.statValue, alert && styles.alertText]}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
     </View>
   );
@@ -136,8 +175,15 @@ function DeviceRow({item}: {item: ViewDevice}): React.JSX.Element {
     .filter(Boolean)
     .join(' · ');
 
+  const police = item.police;
   return (
-    <View style={styles.card}>
+    <View
+      style={[styles.card, police && styles.cardPolice, police?.confidence === 'possible' && styles.cardPolicePossible]}>
+      {police ? (
+        <Text style={styles.policeTag}>
+          {police.confidence === 'likely' ? 'POLICE · likely' : 'POLICE · possible'} — {police.label}
+        </Text>
+      ) : null}
       <View style={styles.rowHeader}>
         <Text style={styles.cardTitle} numberOfLines={1}>
           {title}
@@ -146,6 +192,7 @@ function DeviceRow({item}: {item: ViewDevice}): React.JSX.Element {
       </View>
       <Text style={styles.mono}>{item.mac}</Text>
       {sub ? <Text style={styles.muted}>{sub}</Text> : null}
+      {police ? <Text style={styles.muted}>{police.reasons.join(' · ')}</Text> : null}
       <View style={styles.chips}>
         {chips.map(c => (
           <Text key={c} style={styles.chip}>
@@ -173,6 +220,8 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
       paddingVertical: 8,
       alignItems: 'center',
     },
+    statAlert: {backgroundColor: theme.dangerBg},
+    alertText: {color: theme.danger},
     statValue: {fontSize: 18, fontWeight: '700', color: theme.text},
     statLabel: {fontSize: 11, color: theme.textMuted},
     list: {flex: 1},
@@ -184,6 +233,16 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: theme.border,
     },
+    cardPolice: {borderLeftWidth: 4, borderLeftColor: theme.danger, borderColor: theme.danger},
+    // weaker evidence: keep the accent stripe, drop the full red outline
+    cardPolicePossible: {borderColor: theme.border},
+    policeTag: {fontSize: 11, fontWeight: '700', color: theme.danger, marginBottom: 4, letterSpacing: 0.3},
+    // Same segmented control as super-badger's Settings tabs.
+    segment: {flexDirection: 'row', gap: 6, padding: 4, borderRadius: 10, backgroundColor: theme.surfaceAlt},
+    segmentTab: {flex: 1, alignItems: 'center', paddingVertical: 8, borderRadius: 8},
+    segmentTabActive: {backgroundColor: theme.surface},
+    segmentText: {fontSize: 13, fontWeight: '600', color: theme.textMuted},
+    segmentTextActive: {color: theme.text},
     rowHeader: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'},
     cardTitle: {fontSize: 15, fontWeight: '600', color: theme.text, flexShrink: 1},
     count: {fontSize: 13, color: theme.textMuted, fontVariant: ['tabular-nums']},

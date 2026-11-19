@@ -26,6 +26,21 @@ export interface Settings {
   // off the scan screen. Historical counts live here too; the M2 app
   // keeps only the live session view.
   keepSeconds: number;
+  // Scan list filter: everything heard, or only devices the police
+  // classifier (src/lookup/police.ts) matched. Kept here so it survives
+  // a trip to Settings and app restarts.
+  scanFilter: 'all' | 'police';
+  // Police alerts (src/alerts.ts): a notification when a police match is
+  // first heard, with the three-ping chime and/or a matching vibration.
+  policeAlerts: boolean;
+  // 'likely' alerts only on Axon signatures; 'possible' also on
+  // public-safety vendor OUIs and weak name matches (more false alarms).
+  alertLevel: 'likely' | 'possible';
+  alertSound: boolean;
+  alertVibrate: boolean;
+  // Keep the scan (and alerts) running while the app is in the background,
+  // via a foreground service shown as an ongoing notification.
+  backgroundScan: boolean;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -34,6 +49,12 @@ const DEFAULT_SETTINGS: Settings = {
   scanBaud: 921600,
   mergeGlitches: true,
   keepSeconds: 300,
+  scanFilter: 'all',
+  policeAlerts: true,
+  alertLevel: 'likely',
+  alertSound: true,
+  alertVibrate: true,
+  backgroundScan: true,
 };
 
 type Listener = (settings: Settings) => void;

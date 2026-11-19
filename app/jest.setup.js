@@ -4,3 +4,6 @@
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
+
+// Notifee (alerts, background service) is native too; it ships a Jest mock.
+jest.mock('@notifee/react-native', () => require('@notifee/react-native/jest-mock'));

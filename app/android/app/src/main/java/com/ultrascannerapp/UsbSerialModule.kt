@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.os.PowerManager
 import android.util.Base64
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -198,30 +199,40 @@ class UsbSerialModule(private val reactCtx: ReactApplicationContext) :
 
     reading.set(true)
     val deviceId = driver.device.deviceName
+    // Keep the CPU awake while the port is open, so reads (and the JS scan
+    // session's police alerts, see src/background.ts) keep going with the
+    // screen off. Held by the reader thread for exactly its lifetime.
+    val pm = reactCtx.getSystemService(Context.POWER_SERVICE) as PowerManager
+    val wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ultrascanner:usb-read")
     reader =
         Thread {
+          wakeLock.acquire()
           val buf = ByteArray(READ_BUF)
           var err: String? = null
-          while (reading.get()) {
-            val n =
-                try {
-                  p.read(buf, READ_TIMEOUT_MS)
-                } catch (e: IOException) {
-                  // A read timeout is normal silence (the scanner batches, so
-                  // there are gaps); only a real error ends the thread.
-                  if (e.message?.contains("timeout") == true) continue
-                  err = e.message ?: "read error"
-                  break
-                }
-            if (n > 0) {
-              val map = Arguments.createMap()
-              map.putString("deviceId", deviceId)
-              // Base64 rather than a String: even though every PROTOCOL.md
-              // byte is ASCII, a chunk boundary must never matter to JS.
-              map.putString(
-                  "data64", Base64.encodeToString(buf, 0, n, Base64.NO_WRAP))
-              sendEvent("UsbSerialData", map)
+          try {
+            while (reading.get()) {
+              val n =
+                  try {
+                    p.read(buf, READ_TIMEOUT_MS)
+                  } catch (e: IOException) {
+                    // A read timeout is normal silence (the scanner batches, so
+                    // there are gaps); only a real error ends the thread.
+                    if (e.message?.contains("timeout") == true) continue
+                    err = e.message ?: "read error"
+                    break
+                  }
+              if (n > 0) {
+                val map = Arguments.createMap()
+                map.putString("deviceId", deviceId)
+                // Base64 rather than a String: even though every PROTOCOL.md
+                // byte is ASCII, a chunk boundary must never matter to JS.
+                map.putString(
+                    "data64", Base64.encodeToString(buf, 0, n, Base64.NO_WRAP))
+                sendEvent("UsbSerialData", map)
+              }
             }
+          } finally {
+            if (wakeLock.isHeld) wakeLock.release()
           }
           val m = Arguments.createMap()
           m.putString("deviceId", deviceId)

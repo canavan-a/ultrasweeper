@@ -12,6 +12,8 @@ import {
   Release,
   runUpdate,
 } from '../appUpdater';
+import {sendTestAlert} from '../alerts';
+import {requestNotificationPermission} from '../notifications';
 import {settingsStore, Settings} from '../settings';
 import {THEME_OPTIONS, ThemeName, useTheme} from '../theme';
 
@@ -60,6 +62,8 @@ export function SettingsScreen(): React.JSX.Element {
         />
       </Section>
 
+      <AlertsSection settings={settings} update={update} />
+
       <Section title="Scanning">
         <Text style={styles.label}>Serial baud rate</Text>
         <Text style={styles.help}>
@@ -102,6 +106,93 @@ export function SettingsScreen(): React.JSX.Element {
         v1). All interpretation happens here on the phone.
       </Text>
     </ScrollView>
+  );
+}
+
+const ALERT_LEVELS = [
+  {value: 'likely', label: 'Likely only (Axon)'},
+  {value: 'possible', label: 'Likely + possible'},
+] as const;
+
+function AlertsSection({
+  settings,
+  update,
+}: {
+  settings: Settings;
+  update: (patch: Partial<Settings>) => void;
+}): React.JSX.Element {
+  const theme = useTheme();
+  const styles = makeStyles(theme);
+  const [status, setStatus] = useState<string | null>(null);
+
+  // Turning anything notification-related on is the moment to ask for
+  // Android 13+'s notification permission, and to say plainly if it's denied.
+  const enable = (patch: Partial<Settings>) => {
+    update(patch);
+    requestNotificationPermission()
+      .then(ok => setStatus(ok ? null : 'Notifications are blocked for this app — allow them in Android settings.'))
+      .catch(() => {});
+  };
+
+  const test = () => {
+    setStatus(null);
+    requestNotificationPermission()
+      .then(ok => {
+        if (!ok) {
+          setStatus('Notifications are blocked for this app — allow them in Android settings.');
+          return;
+        }
+        return sendTestAlert();
+      })
+      .catch(e => setStatus(String(e?.message ?? e)));
+  };
+
+  return (
+    <Section title="Police alerts">
+      <Toggle
+        label="Alert when police devices are heard"
+        help="A notification the first time each matching device is heard. It alerts again only after the device has dropped off the list."
+        value={settings.policeAlerts}
+        onValueChange={v => (v ? enable({policeAlerts: v}) : update({policeAlerts: v}))}
+      />
+      {settings.policeAlerts ? (
+        <>
+          <Text style={styles.label}>Alert on</Text>
+          <View style={styles.optionRow}>
+            {ALERT_LEVELS.map(opt => (
+              <Choice
+                key={opt.value}
+                active={settings.alertLevel === opt.value}
+                label={opt.label}
+                onPress={() => update({alertLevel: opt.value})}
+              />
+            ))}
+          </View>
+          <Toggle
+            label="Chime"
+            help="Three quick pings. Follows the phone's ringer: silent mode mutes it."
+            value={settings.alertSound}
+            onValueChange={v => update({alertSound: v})}
+          />
+          <Toggle
+            label="Vibrate"
+            help="Three short buzzes in time with the chime."
+            value={settings.alertVibrate}
+            onValueChange={v => update({alertVibrate: v})}
+          />
+          <Pressable style={styles.button} onPress={test}>
+            <Text style={styles.buttonText}>Test alert</Text>
+          </Pressable>
+        </>
+      ) : null}
+      <Toggle
+        label="Keep scanning in the background"
+        help="While the scanner is plugged in, keep listening (and alerting) with the app closed or the screen off. Shows an ongoing notification and keeps the phone awake."
+        value={settings.backgroundScan}
+        onValueChange={v => (v ? enable({backgroundScan: v}) : update({backgroundScan: v}))}
+      />
+      {status ? <Text style={styles.errorText}>{status}</Text> : null}
+    </Section>
   );
 }
 

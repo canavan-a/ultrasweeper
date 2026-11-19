@@ -1,8 +1,18 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- The updater talks to api.github.com and the APK download host. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Police alerts and background scanning (src/alerts.ts, src/background.ts):
+         notifications, the vibration pattern, a connectedDevice foreground
+         service while the scanner is plugged in, and a CPU wake lock so USB
+         reads keep flowing with the screen off (UsbSerialModule.kt). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- USB permission itself is granted per-device by the system dialog at
          open() time (see UsbSerialModule.kt); these two declare that the app
          is a USB host at all. "required=false" keeps the APK installable on
@@ -19,6 +29,16 @@
       android:allowBackup="false"
       android:theme="@style/AppTheme"
       android:supportsRtl="true">
+
+      <!-- Notifee's foreground service (src/background.ts). Its AAR merges this
+           service in without a type; Android 14+ requires one matching a held
+           permission (FOREGROUND_SERVICE_CONNECTED_DEVICE, above), hence
+           tools:replace. Same arrangement as super-badger's manifest. -->
+      <service
+        android:name="app.notifee.core.ForegroundService"
+        android:foregroundServiceType="connectedDevice"
+        android:exported="false"
+        tools:replace="android:foregroundServiceType" />
 
       <!-- Serves the downloaded APK to the system package installer. -->
       <provider

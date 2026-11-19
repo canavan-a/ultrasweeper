@@ -5,6 +5,7 @@
 // Writes, under android/app/src/main/res:
 //   drawable/ic_launcher_fg_<theme>.xml   adaptive-icon foreground (API 26+)
 //   drawable/ic_launcher_mono.xml         Android 13+ themed-icon layer
+//   drawable/ic_stat_scanner.xml          notification status-bar icon
 //   mipmap-*dpi/ic_launcher_<theme>{,_round}.png   legacy (< API 26) icons
 // The adaptive-icon wrappers and ic_bg_* colors are left as they are.
 //
@@ -153,6 +154,15 @@ try {
   writeFileSync(
     join(RES, 'drawable/ic_launcher_mono.xml'),
     vectorXml(() => '#FFFFFF', 'single-color radar sweep for Android 13+ themed icons.'),
+  );
+  // Notification small icon: the same radar cropped to its 60x60 middle
+  // (the dish spans 52 of it), drawn at status-bar size.
+  writeFileSync(
+    join(RES, 'drawable/ic_stat_scanner.xml'),
+    vectorXml(() => '#FFFFFF', 'notification status-bar icon.')
+      .replace(/android:width="108dp"\s+android:height="108dp"\s+android:viewportWidth="108"\s+android:viewportHeight="108">/,
+        'android:width="24dp"\n    android:height="24dp"\n    android:viewportWidth="60"\n    android:viewportHeight="60">\n  <group android:translateX="-24" android:translateY="-24">')
+      .replace('</vector>', '  </group>\n</vector>'),
   );
 } finally {
   rmSync(tmp, {recursive: true, force: true});

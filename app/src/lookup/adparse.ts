@@ -73,6 +73,8 @@ export interface Classification {
   vendor?: string;
   /** advertised Complete/Shortened Local Name, if any */
   name?: string;
+  /** SIG company IDs from Manufacturer Specific Data, in the order seen */
+  companyIds: number[];
   /** 16-bit service UUIDs seen (hex, e.g. "F7FD") */
   serviceUuids: string[];
   /** true when AdvA is a random address (most phones rotate these) */
@@ -93,7 +95,7 @@ function ascii(hex: string): string {
  * then SIG-assigned service UUIDs, then address-block OUI.
  */
 export function classify(mac: string, adHex: string): Classification {
-  const out: Classification = {labels: [], serviceUuids: [], randomAddress: false};
+  const out: Classification = {labels: [], companyIds: [], serviceUuids: [], randomAddress: false};
   const macBytes = mac.split(':').map(p => parseInt(p, 16));
   // BLE public/identity addresses have the top two bits of the
   // most-significant byte clear; everything else (resolvable private
@@ -133,6 +135,9 @@ export function classify(mac: string, adHex: string): Classification {
           break;
         }
         const company = parseInt(s.data.slice(2, 4) + s.data.slice(0, 2), 16);
+        if (!out.companyIds.includes(company)) {
+          out.companyIds.push(company);
+        }
         const vendor = COMPANIES[company];
         if (vendor) {
           out.vendor = out.vendor ?? vendor;
