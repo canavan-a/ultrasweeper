@@ -1,32 +1,33 @@
-# ultrasweeper
+# scanner
 
-Constant-carrier RF sweepers: cheap nRF24L01 modules on ESP32s held as
-unmodulated carriers and stepped across 2.4 GHz, hopping fast enough to act
-as programmable jammers/probes for whatever is in the band.
+Passive police-scanner detector: one ESP32 devkit, two nRF24L01+
+modules listening to BLE advertising directly, a PIR for presence.
+USB-tethered to a phone (or any host); the device emits no RF.
 
-Each tool is its own directory with its own PlatformIO project; they share
-this repo's dev shell (`nix develop` at the root is the only setup step)
-and the same hardware idiom.
+- `PLAN.md` — the formal plan: device design, RF front-end, app,
+  milestones.
+- `PROTOCOL.md` — normative spec for the serial record stream.
+- `mappings.md` — nRF24 / PIR <-> ESP32 wiring.
+- `firmware/` — PlatformIO project. Build from the repo root:
 
-## Tools
+  ```sh
+  nix develop -c bash -c 'cd scanner/firmware && pio run -e scanner-usb'
+  # flash + watch the record stream:
+  nix develop -c bash -c 'cd scanner/firmware && pio run -e scanner-usb -t upload && pio device monitor'
+  ```
 
-    bluetooth/   BLE jammer: two devices sweep nRF channels 0-80 between
-                 them, blanketing the whole Bluetooth band (2400-2480 MHz)
-                 including the three advertising channels.
-                 See bluetooth/README.md.
-    scanner/     police scanner (design): one ESP32 + two nRF24L01+ as a
-                 BLE advertising receive array; a phone app does vendor
-                 lookups, a police classifier, map pins, history.
-                 See scanner/PLAN.md.
+- `app/` — the Android companion (React Native, bare gradle project in
+  `app/android/`). It reads the record stream over USB Host serial
+  (native Kotlin module over usb-serial-for-android), parses PROTOCOL.md,
+  and does all interpretation client-side: device table, air-glitch
+  folding, company-ID/service-UUID/OUI lookups (bundled IEEE dataset,
+  regenerate with `npm run gen-oui`). Dev:
 
-More sweepers to come; each gets a directory here when it exists.
+  ```sh
+  nix develop -c bash -c 'cd scanner/app && npm ci && npx jest'
+  # run on a device with the scanner attached (needs system Android SDK):
+  nix develop -c bash -c 'cd scanner/app && npm run android'
+  ```
 
-## Conventions
-
-- One PlatformIO project per tool, `firmware/platformio.ini`, with all
-  pins/channels/strides as `build_flags` — sources stay generic.
-- Shared dev shell from the root `flake.nix` (PlatformIO); `pio run -e …`
-  from the tool's `firmware/` dir.
-- Wiring notes live next to the tool that needs them (`mappings.md`).
-- Push target: the repo on the personal box
-  (`ssh://nixos@framework16-connect.acanavan.com/home/nixos/canavan-a/ultrasweeper`).
+- `release/` — signing setup + guided APK release (same sideload flow as
+  super-badger; see `release/README.md`).
