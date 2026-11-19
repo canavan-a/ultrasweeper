@@ -7,13 +7,16 @@
     "start": "react-native start",
     "release": "../release/release.sh",
     "gen-oui": "node tools/gen-oui.mjs",
+    "gen-icon": "node tools/gen-icon.mjs",
     "lint": "eslint .",
     "test": "jest"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "1.24.0",
+    "lucide-react-native": "^1.47.0",
     "react": "18.3.1",
-    "react-native": "0.75.4"
+    "react-native": "0.75.4",
+    "react-native-svg": "^15.8.0"
   },
   "devDependencies": {
     "@babel/core": "^7.20.0",
