@@ -111,6 +111,17 @@ class HuntLogModule(private val reactCtx: ReactApplicationContext) :
     }
   }
 
+  /** Whole log as text, for the Map screen (src/hunt/analysis.ts parses it). */
+  @ReactMethod
+  fun read(name: String, promise: Promise) {
+    try {
+      if (name == openName) writer?.flush()
+      promise.resolve(file(name).readText(Charsets.UTF_8))
+    } catch (e: Exception) {
+      promise.reject("log_read_failed", e)
+    }
+  }
+
   @ReactMethod
   fun remove(name: String, promise: Promise) {
     try {

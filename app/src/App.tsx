@@ -5,6 +5,7 @@ import {Icon} from './components/Icon';
 import {ensureChannels} from './notifications';
 import {Route} from './routes';
 import {LogsScreen} from './screens/LogsScreen';
+import {MapScreen} from './screens/MapScreen';
 import {ScanScreen} from './screens/ScanScreen';
 import {SettingsScreen} from './screens/SettingsScreen';
 import {useScanEngine} from './engine';
@@ -15,6 +16,7 @@ const TITLES: Record<Route['name'], string> = {
   scan: 'Ultrasweeper Scanner',
   settings: 'Settings',
   logs: 'Hunt logs',
+  map: 'Hunt map',
 };
 
 // Same shell as super-badger's app: one top bar, no tab bar. The scan screen
@@ -81,6 +83,13 @@ function AppInner(): React.JSX.Element {
             </View>
             <Pressable
               style={styles.headerIconButton}
+              onPress={() => navigate({name: 'map'})}
+              accessibilityLabel="Hunt map"
+              hitSlop={4}>
+              <Icon name="map" size={20} color={theme.text} />
+            </Pressable>
+            <Pressable
+              style={styles.headerIconButton}
               onPress={() => navigate({name: 'logs'})}
               accessibilityLabel="Hunt logs"
               hitSlop={4}>
@@ -101,6 +110,7 @@ function AppInner(): React.JSX.Element {
         {route.name === 'scan' && <ScanScreen engine={engine} />}
         {route.name === 'settings' && <SettingsScreen />}
         {route.name === 'logs' && <LogsScreen />}
+        {route.name === 'map' && <MapScreen />}
       </View>
     </SafeAreaView>
   );

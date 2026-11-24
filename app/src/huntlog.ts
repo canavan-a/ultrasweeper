@@ -23,6 +23,7 @@ interface HuntLogNative {
   append(text: string): Promise<number>;
   close(): Promise<null>;
   list(): Promise<LogFile[]>;
+  read(name: string): Promise<string>;
   remove(name: string): Promise<boolean>;
   share(name: string): Promise<null>;
   saveToDownloads(name: string): Promise<string>;
@@ -252,6 +253,12 @@ function native(): HuntLogNative {
 
 export function listLogs(): Promise<LogFile[]> {
   return Native ? enqueue(() => Native.list()) : Promise.resolve([]);
+}
+
+/** A log's full text (the open one is flushed first). */
+export function readLog(name: string): Promise<string> {
+  if (name === status.name) flush();
+  return enqueue(() => native().read(name));
 }
 
 export function deleteLog(name: string): Promise<boolean> {
