@@ -2,8 +2,8 @@
 // phone's position when it was heard, one color per device (red = police).
 // A device's dots bunch along the stretch of road where it was in range;
 // tap a device (list or map) to isolate it and draw its estimated spot.
-// Tap empty map to clear. The camera only moves when the picked hunts
-// change, never on a tap.
+// Tap empty map to clear. The camera moves when the picked hunts change and
+// when a device is picked from the list; never on a map tap.
 //
 // Basemap: OpenFreeMap (positron / dark), as in ../super-atlas. Analysis:
 // src/hunt/ (shard folding, unusual-device scoring).
@@ -203,16 +203,31 @@ export function MapScreen(): React.JSX.Element {
   // --- selection ---
   const select = useCallback((mac: string, add = false) => {
     setPickList(null);
-    setSelected(s => {
-      if (add) {
-        const n = new Set(s);
-        if (n.has(mac)) n.delete(mac);
-        else n.add(mac);
-        return n;
-      }
-      return s.size === 1 && s.has(mac) ? new Set() : new Set([mac]);
-    });
+    setSelected(s => nextSelection(s, mac, add));
   }, []);
+
+  // From the list (not the map): select, then fit the camera to what's selected.
+  const selectFromList = (mac: string, add = false) => {
+    const next = nextSelection(selected, mac, add);
+    setPickList(null);
+    setSelected(next);
+    let minLat = 90;
+    let maxLat = -90;
+    let minLon = 180;
+    let maxLon = -180;
+    for (const m of next) {
+      for (const p of byMac.get(m)?.points ?? []) {
+        minLat = Math.min(minLat, p.lat);
+        maxLat = Math.max(maxLat, p.lat);
+        minLon = Math.min(minLon, p.lon);
+        maxLon = Math.max(maxLon, p.lon);
+      }
+    }
+    if (minLat > maxLat) return; // deselected: leave the camera alone
+    // pad a single-spot device out to ~60 m so the camera doesn't dive in
+    const pad = 0.0003;
+    camera.current?.fitBounds([maxLon + pad, maxLat + pad], [minLon - pad, minLat - pad], 60, 500);
+  };
 
   const onDotsPress = useCallback(
     (e: OnPressEvent) => {
@@ -484,14 +499,25 @@ export function MapScreen(): React.JSX.Element {
               unusual={unusual.get(item.mac)}
               selected={selected.has(item.mac)}
               styles={styles}
-              onPress={() => select(item.mac)}
-              onLongPress={() => select(item.mac, true)}
+              onPress={() => selectFromList(item.mac)}
+              onLongPress={() => selectFromList(item.mac, true)}
             />
           )}
         />
       </View>
     </View>
   );
+}
+
+/** tap: select only this one (tap again to clear); add: toggle it in the selection */
+function nextSelection(s: Set<string>, mac: string, add: boolean): Set<string> {
+  if (add) {
+    const n = new Set(s);
+    if (n.has(mac)) n.delete(mac);
+    else n.add(mac);
+    return n;
+  }
+  return s.size === 1 && s.has(mac) ? new Set() : new Set([mac]);
 }
 
 type Styles = ReturnType<typeof makeStyles>;
