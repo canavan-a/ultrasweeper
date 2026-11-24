@@ -95,3 +95,44 @@ describe('StreamParser', () => {
     expect(out[0]).toMatchObject({type: 'stats', ok: 1});
   });
 });
+
+describe('StreamParser with lost bytes', () => {
+  const mac = `MAC:70:EF:9D:3F:0C:1D PWR:19 T:1 CH:37 CRC:S AD:${APPLE_BLOB}`;
+
+  it('cuts a line that swallowed the next record back to that record', () => {
+    const p = new StreamParser();
+    // the "\r\nBATCH-START seq=4" bytes after a truncated MAC record were lost
+    const out = p.feed(`MAC:11:22:33:44:55:66 PWR:3 T:9 CH:38 CRC:S AD:4221${mac}\r\nBATCH-END n=2\r\n`);
+    expect(out.map(r => r.type)).toEqual(['mac', 'batch-end']);
+    expect(out[0]).toMatchObject({mac: '70:EF:9D:3F:0C:1D'});
+    expect(p.corrupt).toBe(1);
+  });
+
+  it('keeps the framing line when it ran into a truncated record', () => {
+    const p = new StreamParser();
+    const out = p.feed('MAC:11:22:33:44:55:66 PWR:3 T:9 CH:38 CRC:S AD:42BATCH-END n=7\r\n');
+    expect(out).toEqual([{type: 'batch-end', n: 7}]);
+  });
+
+  it('does not mistake healthy lines for merged ones', () => {
+    const p = new StreamParser();
+    p.feed(`${SESSION_LINE}\r\n${BANNER_LINE}\r\n${mac}\r\nSTATS T:1 RA:1 RB:1 OK:1 DUP:0 OVER:0\r\n`);
+    expect(p.corrupt).toBe(0);
+  });
+
+  it('drops a runaway unterminated line instead of buffering it forever', () => {
+    const p = new StreamParser();
+    expect(p.feed('Z'.repeat(10_000))).toEqual([]);
+    expect(p.corrupt).toBe(1);
+    // and recovers on the next good line
+    expect(p.feed('\r\nBATCH-END n=0\r\n')).toEqual([{type: 'batch-end', n: 0}]);
+  });
+
+  it('handles a large coalesced chunk in one feed', () => {
+    const p = new StreamParser();
+    const lines = Array.from({length: 5000}, () => mac).join('\r\n') + '\r\n';
+    const out = p.feed(lines);
+    expect(out).toHaveLength(5000);
+    expect(p.corrupt).toBe(0);
+  });
+});

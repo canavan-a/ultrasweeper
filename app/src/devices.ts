@@ -11,6 +11,7 @@
 // foldableInto() recognizes those and attributes the sighting to the
 // original device instead of showing a twin.
 
+import type {Fix} from './geo';
 import type {MacRecord} from './protocol';
 
 export interface DeviceEntry {
@@ -32,6 +33,18 @@ export interface DeviceEntry {
   sightings: number;
   /** count of sightings that were glitch-folded in from other MACs */
   glitchSightings: number;
+  /** power register / channel of the latest sighting (pwr above is the max) */
+  lastPwr: number;
+  lastCh: number;
+  /** phone position at the first and the latest sighting (hunts) */
+  firstFix: Fix | null;
+  lastFix: Fix | null;
+  /**
+   * phone position at the strongest sighting — the best guess of where the
+   * device is. Ties go to the latest, so with 1-bit RPD radios this tracks
+   * the most recent "strong" sighting.
+   */
+  bestFix: Fix | null;
 }
 
 const CRC_RANK: Record<MacRecord['crc'], number> = {'1': 3, P: 2, S: 1};
@@ -97,6 +110,16 @@ export function foldableInto(
   return hamming(ours.slice(0, n), theirs.slice(0, n)) <= 2;
 }
 
+/** per-sighting fields: latest power/channel and where the phone was */
+function noteSighting(e: DeviceEntry, rec: MacRecord, fix: Fix | null): void {
+  e.lastPwr = rec.pwr;
+  e.lastCh = rec.ch;
+  if (!fix) return;
+  if (!e.firstFix) e.firstFix = fix;
+  e.lastFix = fix;
+  if (!e.bestFix || rec.pwr >= e.pwr) e.bestFix = fix;
+}
+
 export class DeviceTable {
   private entries = new Map<string, DeviceEntry>();
 
@@ -108,7 +131,7 @@ export class DeviceTable {
    * Apply one sighting. `mergeGlitches` gates only the cross-MAC folding;
    * exact-MAC merging always happens (that's just the same device again).
    */
-  apply(rec: MacRecord, now: number, mergeGlitches: boolean): void {
+  apply(rec: MacRecord, now: number, mergeGlitches: boolean, fix: Fix | null = null): void {
     let entry = this.entries.get(rec.mac);
     if (!entry && mergeGlitches) {
       const mb = macToBytes(rec.mac);
@@ -118,6 +141,7 @@ export class DeviceTable {
           candidate.sightings += 1;
           candidate.glitchSightings += 1;
           candidate.channels.add(rec.ch);
+          noteSighting(candidate, rec, fix);
           return;
         }
       }
@@ -134,6 +158,11 @@ export class DeviceTable {
         lastSeen: now,
         sightings: 1,
         glitchSightings: 0,
+        lastPwr: rec.pwr,
+        lastCh: rec.ch,
+        firstFix: fix,
+        lastFix: fix,
+        bestFix: fix,
       };
       this.entries.set(rec.mac, entry);
       return;
@@ -141,6 +170,7 @@ export class DeviceTable {
     entry.lastSeen = now;
     entry.sightings += 1;
     entry.channels.add(rec.ch);
+    noteSighting(entry, rec, fix);
     entry.pwr = Math.max(entry.pwr, rec.pwr);
     if (CRC_RANK[rec.crc] > CRC_RANK[entry.crc]) {
       entry.crc = rec.crc;
@@ -156,9 +186,10 @@ export class DeviceTable {
     return [...this.entries.values()].sort((a, b) => b.lastSeen - a.lastSeen);
   }
 
-  pruneOlderThan(now: number, maxAgeMs: number): void {
+  /** Drop entries not seen for maxAgeMs, except the MACs in `keep` (pinned). */
+  pruneOlderThan(now: number, maxAgeMs: number, keep?: ReadonlySet<string>): void {
     for (const [mac, e] of this.entries) {
-      if (now - e.lastSeen > maxAgeMs) {
+      if (now - e.lastSeen > maxAgeMs && !keep?.has(mac)) {
         this.entries.delete(mac);
       }
     }

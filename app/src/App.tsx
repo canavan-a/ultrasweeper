@@ -4,6 +4,7 @@ import {BackHandler, Platform, Pressable, SafeAreaView, StatusBar, StyleSheet, T
 import {Icon} from './components/Icon';
 import {ensureChannels} from './notifications';
 import {Route} from './routes';
+import {LogsScreen} from './screens/LogsScreen';
 import {ScanScreen} from './screens/ScanScreen';
 import {SettingsScreen} from './screens/SettingsScreen';
 import {useScanEngine} from './engine';
@@ -13,6 +14,7 @@ import {Theme, ThemeProvider, useTheme} from './theme';
 const TITLES: Record<Route['name'], string> = {
   scan: 'Ultrasweeper Scanner',
   settings: 'Settings',
+  logs: 'Hunt logs',
 };
 
 // Same shell as super-badger's app: one top bar, no tab bar. The scan screen
@@ -79,6 +81,13 @@ function AppInner(): React.JSX.Element {
             </View>
             <Pressable
               style={styles.headerIconButton}
+              onPress={() => navigate({name: 'logs'})}
+              accessibilityLabel="Hunt logs"
+              hitSlop={4}>
+              <Icon name="logs" size={20} color={theme.text} />
+            </Pressable>
+            <Pressable
+              style={styles.headerIconButton}
               onPress={() => navigate({name: 'settings'})}
               accessibilityLabel="Settings"
               hitSlop={4}>
@@ -91,6 +100,7 @@ function AppInner(): React.JSX.Element {
       <View style={styles.body}>
         {route.name === 'scan' && <ScanScreen engine={engine} />}
         {route.name === 'settings' && <SettingsScreen />}
+        {route.name === 'logs' && <LogsScreen />}
       </View>
     </SafeAreaView>
   );

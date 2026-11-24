@@ -22,7 +22,11 @@ USB-tethered to a phone (or any host); the device emits no RF.
   and does all interpretation client-side: device table, air-glitch
   folding, company-ID/service-UUID/OUI lookups (bundled IEEE dataset,
   regenerate with `npm run gen-oui`), the police classifier and police
-  alerts (with background scanning). Dev:
+  alerts (with background scanning). With location on, every sighting is
+  tagged with the phone's GPS fix. Each scanner connection is recorded
+  locally as `hunt_YYYY-MM-DD_HH-MM-SS.csv` (one row per sighting / fix;
+  columns in `app/src/huntlog.ts`), listed with sizes on the Logs screen
+  and shared or saved to Downloads from there. Nothing is uploaded. Dev:
 
   ```sh
   nix develop -c bash -c 'cd app && npm ci && npx jest'

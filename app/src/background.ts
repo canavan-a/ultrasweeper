@@ -8,6 +8,10 @@
 // The service type is connectedDevice: that's what this is (a USB scanner),
 // and Android 14+ allows it once the app holds USB permission for the
 // device, which connect() guarantees before calling startBackground().
+// While a hunt has location on, the service also carries the location type:
+// that is what keeps GPS fixes coming with the screen off (src/location.ts).
+// Android 14 rejects that type without a granted location permission, so
+// session.ts only sets it after the permission prompt succeeded.
 import notifee, {AndroidForegroundServiceType} from '@notifee/react-native';
 
 import {CH_SCANNING, ensureChannels, NID_SCANNING, PRESS_ACTION, SMALL_ICON} from './notifications';
@@ -18,6 +22,7 @@ interface Countable {
 
 let running = false;
 let lastBody = '';
+let withLocation = false;
 // Resolves the promise the registered service runner is parked on (see
 // registerBackgroundRunner); the service stops when it settles.
 let release: (() => void) | null = null;
@@ -47,12 +52,24 @@ async function show(text: string): Promise<void> {
       channelId: CH_SCANNING,
       smallIcon: SMALL_ICON,
       asForegroundService: true,
-      foregroundServiceTypes: [AndroidForegroundServiceType.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE],
+      foregroundServiceTypes: withLocation
+        ? [
+            AndroidForegroundServiceType.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            AndroidForegroundServiceType.FOREGROUND_SERVICE_TYPE_LOCATION,
+          ]
+        : [AndroidForegroundServiceType.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE],
       ongoing: true,
       onlyAlertOnce: true,
       pressAction: PRESS_ACTION,
     },
   });
+}
+
+/** Add/remove the location service type; re-posts a running service. */
+export function setBackgroundLocation(on: boolean): void {
+  if (on === withLocation) return;
+  withLocation = on;
+  if (running) show(lastBody).catch(() => {});
 }
 
 export function startBackground(view: Countable[]): void {

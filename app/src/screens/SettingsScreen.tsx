@@ -64,6 +64,8 @@ export function SettingsScreen(): React.JSX.Element {
 
       <AlertsSection settings={settings} update={update} />
 
+      <HuntSection settings={settings} update={update} />
+
       <Section title="Scanning">
         <Text style={styles.label}>Serial baud rate</Text>
         <Text style={styles.help}>
@@ -192,6 +194,31 @@ function AlertsSection({
         onValueChange={v => (v ? enable({backgroundScan: v}) : update({backgroundScan: v}))}
       />
       {status ? <Text style={styles.errorText}>{status}</Text> : null}
+    </Section>
+  );
+}
+
+function HuntSection({
+  settings,
+  update,
+}: {
+  settings: Settings;
+  update: (patch: Partial<Settings>) => void;
+}): React.JSX.Element {
+  return (
+    <Section title="Hunts">
+      <Toggle
+        label="Tag sightings with my location"
+        help="While a scanner is connected, record the phone's GPS position with every sighting, and show how far and which way each device was heard from where you are now."
+        value={settings.locationEnabled}
+        onValueChange={v => update({locationEnabled: v})}
+      />
+      <Toggle
+        label="Record hunts to CSV"
+        help="Each scanner connection is saved on this phone as its own timestamped CSV file: every sighting and GPS fix. Nothing is uploaded. Open Logs (the list icon on the scan screen) to see sizes, share, save to Downloads or delete."
+        value={settings.recordHunts}
+        onValueChange={v => update({recordHunts: v})}
+      />
     </Section>
   );
 }

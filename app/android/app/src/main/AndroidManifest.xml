@@ -13,6 +13,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Hunts (src/location.ts, LocationModule.kt): sightings are tagged with
+         the phone's GPS position. The foreground service also carries the
+         "location" type so fixes keep coming with the screen off; that needs
+         FOREGROUND_SERVICE_LOCATION on Android 14+, but not background
+         location, because the service starts while the app is open. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <!-- USB permission itself is granted per-device by the system dialog at
          open() time (see UsbSerialModule.kt); these two declare that the app
          is a USB host at all. "required=false" keeps the APK installable on
@@ -36,7 +44,7 @@
            tools:replace. Same arrangement as super-badger's manifest. -->
       <service
         android:name="app.notifee.core.ForegroundService"
-        android:foregroundServiceType="connectedDevice"
+        android:foregroundServiceType="connectedDevice|location"
         android:exported="false"
         tools:replace="android:foregroundServiceType" />
 

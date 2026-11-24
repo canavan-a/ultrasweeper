@@ -37,11 +37,13 @@ export interface SerialDataEvent {
   deviceId: string;
   /** base64 of the raw bytes read (never assume chunk boundaries) */
   data64: string;
+  /** cumulative bytes native discarded because JS fell behind (normally 0) */
+  dropped?: number;
 }
 
 export interface SerialStateEvent {
   deviceId?: string;
-  state: 'attached' | 'detached' | 'closed' | 'error';
+  state: 'attached' | 'detached' | 'error';
   message?: string;
 }
 

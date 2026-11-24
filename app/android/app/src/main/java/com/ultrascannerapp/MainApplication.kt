@@ -20,6 +20,8 @@ class MainApplication : Application(), ReactApplication {
               add(UsbSerialPackage())
               add(AppUpdaterPackage())
               add(AppIconPackage())
+              add(LocationPackage())
+              add(HuntLogPackage())
             }
 
         override fun getJSMainModuleName(): String = "index"

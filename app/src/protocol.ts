@@ -196,39 +196,86 @@ export function parseLine(line: string): ParsedRecord | null {
   return {type: 'unknown', line: trimmed};
 }
 
+// Where a record can begin. None of these can occur inside a healthy line
+// (AD/HEX payloads are uppercase hex, and none of these prefixes is), so
+// finding one past column 0 means bytes were lost and two lines ran
+// together: the head is a truncated record and the tail is a fresh one.
+const RECORD_START = /MAC:[0-9A-F]{2}:|BATCH-(?:START|END)|STATS T:|PIR T:|RAW T:|PROTO=/g;
+
+/** index of the last record start past column 0, or -1 */
+function lastEmbeddedStart(line: string): number {
+  let at = -1;
+  RECORD_START.lastIndex = 1;
+  let m: RegExpExecArray | null;
+  while ((m = RECORD_START.exec(line)) !== null) {
+    if (m.index > 0) at = m.index;
+  }
+  return at;
+}
+
+/** longest line PROTOCOL.md can produce, with headroom (MAC + 32-byte AD ~ 130) */
+const MAX_LINE = 512;
+
 /**
  * Splits a byte-stream (already decoded to a string) into protocol lines.
  * feed() may be called with any chunk boundary; a partial trailing line is
  * kept in the buffer. The firmware's startup garble (ROM chatter at the
  * wrong baud) simply arrives as unparseable lines, which parseLine turns
  * into `unknown` — no special-casing needed here.
+ *
+ * Lost bytes (a dropped USB packet, a bridge-chip overrun) are survivable:
+ * a line that swallowed the start of the next record is cut back to that
+ * record (`corrupt` counts how often), and an over-long run without a line
+ * ending is thrown away instead of being parsed or buffered forever.
+ *
+ * One pass with indexOf per chunk: native hands JS large coalesced chunks,
+ * and re-slicing the whole buffer per line (as this used to) was quadratic.
  */
 export class StreamParser {
   private buf = '';
+  /** lines dropped or cut because bytes were evidently lost */
+  corrupt = 0;
 
   feed(chunk: string): ParsedRecord[] {
-    this.buf += chunk;
+    const data = this.buf.length ? this.buf + chunk : chunk;
     const out: ParsedRecord[] = [];
-    let idx: number;
+    let pos = 0;
+    let nl: number;
     // Accept bare \n too: tolerating it costs nothing and covers a host
     // driver that strips \r.
-    while ((idx = this.buf.search(/\r?\n/)) >= 0) {
-      const line = this.buf.slice(0, idx);
-      this.buf = this.buf.slice(idx + (this.buf[idx + 1] === '\n' ? 2 : 1));
+    while ((nl = data.indexOf('\n', pos)) >= 0) {
+      let line = data.slice(pos, nl);
+      pos = nl + 1;
+      if (line.length > MAX_LINE) {
+        // keep whatever valid record the tail holds; the rest is garbage
+        const at = lastEmbeddedStart(line);
+        this.corrupt++;
+        if (at < 0) continue;
+        line = line.slice(at);
+      } else {
+        const at = lastEmbeddedStart(line);
+        if (at > 0) {
+          this.corrupt++;
+          line = line.slice(at);
+        }
+      }
       const rec = parseLine(line);
       if (rec) {
         out.push(rec);
       }
     }
+    this.buf = pos < data.length ? data.slice(pos) : '';
     // A stuck device that stops terminating lines shouldn't grow this
-    // forever; anything past 4 KiB of unterminated text is noise.
-    if (this.buf.length > 4096) {
+    // forever; past a few lines' worth of unterminated text is noise.
+    if (this.buf.length > 8 * MAX_LINE) {
       this.buf = '';
+      this.corrupt++;
     }
     return out;
   }
 
   reset(): void {
     this.buf = '';
+    this.corrupt = 0;
   }
 }

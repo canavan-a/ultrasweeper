@@ -41,6 +41,17 @@ export interface Settings {
   // Keep the scan (and alerts) running while the app is in the background,
   // via a foreground service shown as an ongoing notification.
   backgroundScan: boolean;
+  // Hunts: tag sightings with the phone's GPS position (src/location.ts),
+  // shown per device as "heard 120 m NE of you".
+  locationEnabled: boolean;
+  // Record each scanner connection to a local CSV file (src/huntlog.ts):
+  // every sighting and GPS fix, timestamped. Files stay on the phone until
+  // shared or saved from the Logs screen.
+  recordHunts: boolean;
+  // Devices pinned on the scan screen (tap the pin on a row): always at the
+  // top with "last heard …", and never pruned from the list. Kept across
+  // restarts, so a device of interest is recognized next time too.
+  pinnedMacs: string[];
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -55,6 +66,9 @@ const DEFAULT_SETTINGS: Settings = {
   alertSound: true,
   alertVibrate: true,
   backgroundScan: true,
+  locationEnabled: true,
+  recordHunts: true,
+  pinnedMacs: [],
 };
 
 type Listener = (settings: Settings) => void;
@@ -87,6 +101,12 @@ async function save(next: Settings): Promise<void> {
   } catch {
     // best-effort persistence; the in-memory value above is still updated
   }
+}
+
+export function togglePinned(mac: string): void {
+  const s = current;
+  const pinned = s.pinnedMacs.includes(mac) ? s.pinnedMacs.filter(m => m !== mac) : [...s.pinnedMacs, mac];
+  save({...s, pinnedMacs: pinned});
 }
 
 export const settingsStore = {

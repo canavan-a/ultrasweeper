@@ -2,4 +2,6 @@
 <paths>
     <!-- Matches getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS). -->
     <external-files-path name="downloads" path="Download/" />
+    <!-- Hunt CSV logs (HuntLogModule.kt), for the share sheet. -->
+    <files-path name="hunts" path="hunts/" />
 </paths>

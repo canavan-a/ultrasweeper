@@ -4,17 +4,45 @@
 import React, {useEffect, useState} from 'react';
 import {FlatList, Pressable, StyleSheet, Text, View} from 'react-native';
 
+import {formatAgo} from '../ago';
+import {Icon} from '../components/Icon';
 import type {ScanEngine, ViewDevice} from '../engine';
-import {settingsStore, Settings} from '../settings';
+import {describeRelative, Fix, formatFix} from '../geo';
+import {formatBytes} from '../huntlog';
+import {STALE_MS} from '../location';
+import {settingsStore, Settings, togglePinned} from '../settings';
 import {useTheme} from '../theme';
 
 const CRC_LABEL: Record<string, string> = {'1': 'CRC', P: 'partial', S: 'struct'};
+
+/** A list row: a device, or a pinned MAC not heard since the app started. */
+type Item = {key: string; pinned: boolean; device: ViewDevice | null; mac: string};
+
+/** Re-render every `ms` so "last heard 12s ago" keeps counting. */
+function useNow(ms: number): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), ms);
+    return () => clearInterval(t);
+  }, [ms]);
+  return now;
+}
+
 
 export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
   const theme = useTheme();
   const styles = makeStyles(theme);
   const [filter, setFilter] = useState<Settings['scanFilter']>(settingsStore.get().scanFilter);
-  useEffect(() => settingsStore.subscribe(s => setFilter(s.scanFilter)), []);
+  const [pinned, setPinned] = useState<string[]>(settingsStore.get().pinnedMacs);
+  useEffect(
+    () =>
+      settingsStore.subscribe(s => {
+        setFilter(s.scanFilter);
+        setPinned(s.pinnedMacs);
+      }),
+    [],
+  );
+  const now = useNow(1000);
   const chooseFilter = (f: Settings['scanFilter']) => settingsStore.save({...settingsStore.get(), scanFilter: f});
 
   if (!engine.available) {
@@ -67,12 +95,21 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
 
   const s = engine.session;
   const st = engine.stats;
+  const here = engine.fix && Date.now() - engine.fix.t < STALE_MS ? engine.fix : null;
   const policeCount = engine.view.filter(d => d.police).length;
   // Police matches float to the top (likely before possible), each group
   // still most-recent-first as the engine sorted it.
   const rank = (d: ViewDevice) => (!d.police ? 2 : d.police.confidence === 'likely' ? 0 : 1);
   const shown =
     filter === 'police' ? engine.view.filter(d => d.police) : [...engine.view].sort((a, b) => rank(a) - rank(b));
+  // Pinned devices sit on top in pin order, in either filter, even when
+  // they have not been heard yet this session.
+  const pinnedSet = new Set(pinned);
+  const byMac = new Map(engine.view.map(d => [d.mac, d]));
+  const items: Item[] = [
+    ...pinned.map(mac => ({key: mac, pinned: true, device: byMac.get(mac) ?? null, mac})),
+    ...shown.filter(d => !pinnedSet.has(d.mac)).map(d => ({key: d.mac, pinned: false, device: d, mac: d.mac})),
+  ];
   const filters = [
     ['all', `All (${engine.view.length})`],
     ['police', `Police (${policeCount})`],
@@ -91,6 +128,12 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
         {s ? `board ${s.id}  fw ${s.fw}  proto ${s.proto}` : 'waiting for PROTO=1 …'}
         {engine.parseErrors > 0 ? `   ${engine.parseErrors} unparsed lines` : ''}
       </Text>
+      <HuntLine engine={engine} />
+      {engine.corruptLines + engine.lostBatches + engine.reopens > 0 ? (
+        <Text style={styles.warn}>
+          {linkHealth(engine)}
+        </Text>
+      ) : null}
 
       <View style={styles.segment} accessibilityRole="tablist">
         {filters.map(([key, label]) => (
@@ -106,9 +149,16 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
       </View>
 
       <FlatList
-        data={shown}
-        keyExtractor={d => d.mac}
-        renderItem={({item}) => <DeviceRow item={item} />}
+        data={items}
+        extraData={now}
+        keyExtractor={it => it.key}
+        renderItem={({item}) =>
+          item.device ? (
+            <DeviceRow item={item.device} here={here} pinned={item.pinned} now={now} />
+          ) : (
+            <MissingPinRow mac={item.mac} />
+          )
+        }
         style={styles.list}
         ListEmptyComponent={
           filter === 'police' ? (
@@ -157,7 +207,85 @@ function Stat({label, value, alert}: {label: string; value: string; alert?: bool
   );
 }
 
-function DeviceRow({item}: {item: ViewDevice}): React.JSX.Element {
+function linkHealth(e: ScanEngine): string {
+  const parts: string[] = [];
+  if (e.corruptLines) parts.push(`${e.corruptLines} garbled line${e.corruptLines === 1 ? '' : 's'} skipped`);
+  if (e.lostBatches) parts.push(`${e.lostBatches} batch${e.lostBatches === 1 ? '' : 'es'} lost`);
+  if (e.reopens) parts.push(`${e.reopens} auto-reconnect${e.reopens === 1 ? '' : 's'}`);
+  return `link: ${parts.join(' · ')}`;
+}
+
+/** One line of hunt status: phone location + the CSV being recorded. */
+function HuntLine({engine}: {engine: ScanEngine}): React.JSX.Element | null {
+  const theme = useTheme();
+  const styles = makeStyles(theme);
+  const f = engine.fix;
+  const fresh = f && Date.now() - f.t < STALE_MS;
+  const loc =
+    engine.locStatus === 'off'
+      ? 'location off'
+      : engine.locStatus === 'denied'
+      ? 'location permission denied'
+      : engine.locStatus === 'disabled' && !fresh
+      ? 'location is switched off in Android'
+      : fresh
+      ? `GPS ${formatFix(f!)}`
+      : 'waiting for a GPS fix…';
+  const log = engine.log;
+  const rec = log.lastError
+    ? `log write failed: ${log.lastError}`
+    : log.name
+    ? `recording ${log.name} · ${formatBytes(log.bytes)}`
+    : 'not recording';
+  return (
+    <Text style={[styles.muted, log.lastError ? styles.warn : null]} numberOfLines={2}>
+      {loc} · {rec}
+    </Text>
+  );
+}
+
+function PinButton({mac, pinned}: {mac: string; pinned: boolean}): React.JSX.Element {
+  const theme = useTheme();
+  const styles = makeStyles(theme);
+  return (
+    <Pressable
+      onPress={() => togglePinned(mac)}
+      hitSlop={10}
+      style={styles.pinButton}
+      accessibilityRole="button"
+      accessibilityLabel={pinned ? `Unpin ${mac}` : `Pin ${mac} to the top`}>
+      <Icon name={pinned ? 'pin-off' : 'pin'} size={16} color={pinned ? theme.primary : theme.textMuted} />
+    </Pressable>
+  );
+}
+
+/** A pinned MAC with no sighting since the app (re)started. */
+function MissingPinRow({mac}: {mac: string}): React.JSX.Element {
+  const theme = useTheme();
+  const styles = makeStyles(theme);
+  return (
+    <View style={[styles.card, styles.cardPinned]}>
+      <View style={styles.rowHeader}>
+        <Text style={styles.pinTag}>PINNED</Text>
+        <PinButton mac={mac} pinned />
+      </View>
+      <Text style={styles.mono}>{mac}</Text>
+      <Text style={styles.muted}>Not heard this session yet.</Text>
+    </View>
+  );
+}
+
+function DeviceRow({
+  item,
+  here,
+  pinned,
+  now,
+}: {
+  item: ViewDevice;
+  here: Fix | null;
+  pinned: boolean;
+  now: number;
+}): React.JSX.Element {
   const theme = useTheme();
   const styles = makeStyles(theme);
   const cls = item.cls;
@@ -177,23 +305,46 @@ function DeviceRow({item}: {item: ViewDevice}): React.JSX.Element {
     .join(' · ');
 
   const police = item.police;
+  const age = now - item.lastSeen;
+  // fresh: heard within the last few batches; stale: probably gone
+  const ageStyle = age < 10_000 ? styles.ageFresh : age < 60_000 ? styles.ageRecent : styles.ageStale;
   return (
     <View
-      style={[styles.card, police && styles.cardPolice, police?.confidence === 'possible' && styles.cardPolicePossible]}>
-      {police ? (
-        <Text style={styles.policeTag}>
-          {police.confidence === 'likely' ? 'POLICE · likely' : 'POLICE · possible'} — {police.label}
-        </Text>
+      style={[
+        styles.card,
+        police && styles.cardPolice,
+        police?.confidence === 'possible' && styles.cardPolicePossible,
+        pinned && styles.cardPinned,
+      ]}>
+      {pinned || police ? (
+        <View style={styles.tagRow}>
+          {pinned ? <Text style={styles.pinTag}>PINNED</Text> : null}
+          {police ? (
+            <Text style={styles.policeTag}>
+              {police.confidence === 'likely' ? 'POLICE · likely' : 'POLICE · possible'} — {police.label}
+            </Text>
+          ) : null}
+        </View>
       ) : null}
       <View style={styles.rowHeader}>
         <Text style={styles.cardTitle} numberOfLines={1}>
           {title}
         </Text>
-        <Text style={styles.count}>{item.sightings}</Text>
+        <Text style={styles.count}>{item.sightings}×</Text>
+        <PinButton mac={item.mac} pinned={pinned} />
       </View>
+      <Text style={[styles.age, pinned && styles.agePinned, ageStyle]}>last heard {formatAgo(age)}</Text>
       <Text style={styles.mono}>{item.mac}</Text>
       {sub ? <Text style={styles.muted}>{sub}</Text> : null}
       {police ? <Text style={styles.muted}>{police.reasons.join(' · ')}</Text> : null}
+      {item.bestFix ? (
+        <Text style={styles.where}>
+          {here ? `strongest ${describeRelative(here, item.bestFix)}` : `strongest at ${formatFix(item.bestFix)}`}
+          {item.lastFix && item.lastFix !== item.bestFix && here
+            ? ` · last ${describeRelative(here, item.lastFix)}`
+            : ''}
+        </Text>
+      ) : null}
       <View style={styles.chips}>
         {chips.map(c => (
           <Text key={c} style={styles.chip}>
@@ -237,15 +388,24 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
     cardPolice: {borderLeftWidth: 4, borderLeftColor: theme.danger, borderColor: theme.danger},
     // weaker evidence: keep the accent stripe, drop the full red outline
     cardPolicePossible: {borderColor: theme.border},
-    policeTag: {fontSize: 11, fontWeight: '700', color: theme.danger, marginBottom: 4, letterSpacing: 0.3},
+    policeTag: {fontSize: 11, fontWeight: '700', color: theme.danger, marginBottom: 4, letterSpacing: 0.3, flexShrink: 1},
+    cardPinned: {borderLeftWidth: 4, borderLeftColor: theme.primary},
+    tagRow: {flexDirection: 'row', gap: 8, alignItems: 'center'},
+    pinTag: {fontSize: 11, fontWeight: '700', color: theme.primary, marginBottom: 4, letterSpacing: 0.3},
+    pinButton: {paddingLeft: 10, paddingVertical: 2},
+    age: {fontSize: 12, marginTop: 2, fontVariant: ['tabular-nums']},
+    agePinned: {fontSize: 14, fontWeight: '700'},
+    ageFresh: {color: theme.success},
+    ageRecent: {color: theme.text},
+    ageStale: {color: theme.textMuted},
     // Same segmented control as super-badger's Settings tabs.
     segment: {flexDirection: 'row', gap: 6, padding: 4, borderRadius: 10, backgroundColor: theme.surfaceAlt},
     segmentTab: {flex: 1, alignItems: 'center', paddingVertical: 8, borderRadius: 8},
     segmentTabActive: {backgroundColor: theme.surface},
     segmentText: {fontSize: 13, fontWeight: '600', color: theme.textMuted},
     segmentTextActive: {color: theme.text},
-    rowHeader: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'},
-    cardTitle: {fontSize: 15, fontWeight: '600', color: theme.text, flexShrink: 1},
+    rowHeader: {flexDirection: 'row', alignItems: 'center', gap: 6},
+    cardTitle: {fontSize: 15, fontWeight: '600', color: theme.text, flexShrink: 1, flexGrow: 1},
     count: {fontSize: 13, color: theme.textMuted, fontVariant: ['tabular-nums']},
     mono: {fontSize: 12, color: theme.codeText, fontFamily: 'monospace', marginTop: 2},
     muted: {fontSize: 12, color: theme.textMuted, marginTop: 2},
@@ -278,5 +438,7 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
     dangerButton: {backgroundColor: theme.dangerBg, borderColor: theme.danger},
     dangerButtonText: {color: theme.danger},
     error: {fontSize: 12, color: theme.danger, marginTop: 4},
+    warn: {fontSize: 12, color: theme.danger},
+    where: {fontSize: 12, color: theme.text, marginTop: 4},
   });
 }

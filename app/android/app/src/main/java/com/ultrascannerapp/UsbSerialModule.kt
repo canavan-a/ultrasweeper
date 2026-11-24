@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.PowerManager
+import android.os.Process
 import android.util.Base64
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -18,7 +19,12 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
+import com.hoho.android.usbserial.util.SerialInputOutputManager
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -36,13 +42,22 @@ class UsbSerialModule(private val reactCtx: ReactApplicationContext) :
 
   private companion object {
     const val ACTION_PERMISSION = "com.ultrascannerapp.UsbSerial.PERMISSION"
-    const val READ_BUF = 1024
-    const val READ_TIMEOUT_MS = 250
+    // 16 KiB per USB request: the most Android allows for one bulk IN
+    // request on every API level we support.
+    const val READ_BUF = 16 * 1024
+    const val FLUSH_MS = 50L
+    // ~11 s of a saturated 921600-baud line.
+    const val MAX_PENDING = 1024 * 1024
   }
 
   private var port: UsbSerialPort? = null
-  private var reader: Thread? = null
-  private var reading = AtomicBoolean(false)
+  private var ioManager: SerialInputOutputManager? = null
+  private var flusher: ScheduledExecutorService? = null
+  private var wakeLock: PowerManager.WakeLock? = null
+  private val reading = AtomicBoolean(false)
+  private val pendingLock = Any()
+  private val pending = ByteArrayOutputStream(64 * 1024)
+  private var droppedBytes = 0L
 
   // Hot-plug: tells JS to re-run getDeviceList() (and to drop the live
   // connection if the open device is the one that went away).
@@ -197,51 +212,89 @@ class UsbSerialModule(private val reactCtx: ReactApplicationContext) :
       return
     }
 
-    reading.set(true)
     val deviceId = driver.device.deviceName
     // Keep the CPU awake while the port is open, so reads (and the JS scan
     // session's police alerts, see src/background.ts) keep going with the
-    // screen off. Held by the reader thread for exactly its lifetime.
+    // screen off. Held from open to close.
     val pm = reactCtx.getSystemService(Context.POWER_SERVICE) as PowerManager
-    val wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ultrascanner:usb-read")
-    reader =
-        Thread {
-          wakeLock.acquire()
-          val buf = ByteArray(READ_BUF)
-          var err: String? = null
-          try {
-            while (reading.get()) {
-              val n =
-                  try {
-                    p.read(buf, READ_TIMEOUT_MS)
-                  } catch (e: IOException) {
-                    // A read timeout is normal silence (the scanner batches, so
-                    // there are gaps); only a real error ends the thread.
-                    if (e.message?.contains("timeout") == true) continue
-                    err = e.message ?: "read error"
-                    break
+    val wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ultrascanner:usb-read")
+    wl.acquire()
+    wakeLock = wl
+
+    // Reading: the library's SerialInputOutputManager with a read timeout of
+    // 0. That path keeps a UsbRequest queued and blocks in requestWait().
+    // A read *with* a timeout (what this module used to do, 250 ms) goes
+    // through bulkTransfer(), which usb-serial-for-android documents as
+    // losing data at high baud rates with continuous traffic. At 921600
+    // that loss showed up as merged/garbled lines and a stalling app.
+    //
+    // onNewData only appends to `pending`, so the USB thread is back in
+    // requestWait() fast (the bridge chip's FIFO is tiny). A separate
+    // flusher hands the bytes to JS at most every FLUSH_MS, so a busy
+    // stream costs JS ~20 events a second, not one per USB packet.
+    val io =
+        SerialInputOutputManager(
+            p,
+            object : SerialInputOutputManager.Listener {
+              override fun onNewData(data: ByteArray) {
+                synchronized(pendingLock) {
+                  if (pending.size() + data.size > MAX_PENDING) {
+                    // JS has stopped draining. Drop the backlog rather than
+                    // grow without bound; the parser resyncs on the next line.
+                    droppedBytes += pending.size()
+                    pending.reset()
                   }
-              if (n > 0) {
-                val map = Arguments.createMap()
-                map.putString("deviceId", deviceId)
-                // Base64 rather than a String: even though every PROTOCOL.md
-                // byte is ASCII, a chunk boundary must never matter to JS.
-                map.putString(
-                    "data64", Base64.encodeToString(buf, 0, n, Base64.NO_WRAP))
-                sendEvent("UsbSerialData", map)
+                  pending.write(data, 0, data.size)
+                }
               }
-            }
-          } finally {
-            if (wakeLock.isHeld) wakeLock.release()
-          }
-          val m = Arguments.createMap()
-          m.putString("deviceId", deviceId)
-          m.putString("state", if (err == null) "closed" else "error")
-          err?.let { m.putString("message", it) }
-          sendEvent("UsbSerialState", m)
-        }
-    reader?.start()
+
+              override fun onRunError(e: Exception) {
+                // Also fires when close() stops the manager; only report
+                // errors while we still mean to be reading.
+                if (!reading.getAndSet(false)) return
+                flush(deviceId)
+                val m = Arguments.createMap()
+                m.putString("deviceId", deviceId)
+                m.putString("state", "error")
+                m.putString("message", e.message ?: "read error")
+                sendEvent("UsbSerialState", m)
+              }
+            })
+    io.readTimeout = 0
+    io.readBufferSize = READ_BUF
+    io.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+    synchronized(pendingLock) {
+      pending.reset()
+      droppedBytes = 0
+    }
+    reading.set(true)
+    ioManager = io
+    io.start()
+
+    val exec = Executors.newSingleThreadScheduledExecutor()
+    exec.scheduleWithFixedDelay({ flush(deviceId) }, FLUSH_MS, FLUSH_MS, TimeUnit.MILLISECONDS)
+    flusher = exec
     promise.resolve(null)
+  }
+
+  /** Hand everything read since the last flush to JS as one event. */
+  private fun flush(deviceId: String) {
+    val bytes: ByteArray
+    val dropped: Long
+    synchronized(pendingLock) {
+      if (pending.size() == 0) return
+      bytes = pending.toByteArray()
+      pending.reset()
+      dropped = droppedBytes
+    }
+    val map = Arguments.createMap()
+    map.putString("deviceId", deviceId)
+    // Base64 rather than a String: even though every PROTOCOL.md byte is
+    // ASCII, a chunk boundary must never matter to JS.
+    map.putString("data64", Base64.encodeToString(bytes, Base64.NO_WRAP))
+    // cumulative bytes discarded because JS fell behind (normally 0)
+    map.putDouble("dropped", dropped.toDouble())
+    sendEvent("UsbSerialData", map)
   }
 
   @ReactMethod
@@ -252,17 +305,19 @@ class UsbSerialModule(private val reactCtx: ReactApplicationContext) :
 
   private fun closePort() {
     reading.set(false)
-    reader?.let {
-      try {
-        it.join(1000)
-      } catch (_: InterruptedException) {}
-    }
-    reader = null
+    flusher?.shutdownNow()
+    flusher = null
+    // stop() asks the IO thread to finish; closing the port cancels its
+    // pending UsbRequest so requestWait() returns.
+    ioManager?.stop()
+    ioManager = null
     port?.let {
       try {
         it.close()
       } catch (_: IOException) {}
     }
     port = null
+    wakeLock?.let { if (it.isHeld) it.release() }
+    wakeLock = null
   }
 }

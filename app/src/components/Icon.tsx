@@ -1,14 +1,17 @@
 import React from 'react';
-import {ChevronLeft, LucideIcon, Settings} from 'lucide-react-native';
+import {ChevronLeft, FileText, LucideIcon, Pin, PinOff, Settings} from 'lucide-react-native';
 
 // Same icon set and wrapper API as super-badger's app (lucide-react-native,
 // rendered through react-native-svg), so the two apps' chrome is drawn the
 // same way. Add names here as screens need them.
-export type IconName = 'gear' | 'chevron-left';
+export type IconName = 'gear' | 'chevron-left' | 'logs' | 'pin' | 'pin-off';
 
 const ICONS: Record<IconName, LucideIcon> = {
   gear: Settings,
   'chevron-left': ChevronLeft,
+  logs: FileText,
+  pin: Pin,
+  'pin-off': PinOff,
 };
 
 export function Icon({
