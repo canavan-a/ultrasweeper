@@ -8,6 +8,7 @@
 // half of all MACs were such shards.
 
 import {distanceM} from '../geo';
+import {classify} from '../lookup/adparse';
 
 export interface Sighting {
   t: number;
@@ -36,6 +37,8 @@ export interface HuntDevice {
   last: number;
   name: string;
   vendor: string;
+  /** best description from re-classifying its most common payload with today's tables */
+  kind: string;
   police: string;
   /** number of distinct shard MACs folded in */
   shards: number;
@@ -109,6 +112,9 @@ export function macBitDistance(a: string, b: string): number {
   }
   return n;
 }
+
+/** labels that say nothing beyond the vendor */
+const GENERIC_LABEL = /advertisement$|^OUI-registered|service [0-9A-F]{4}$|^Google Fast Pair device$/;
 
 const num = (s: string | undefined): number | null => (s == null || s === '' ? null : Number(s));
 
@@ -196,13 +202,20 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
         for (const x of a) if (x[k]) m.set(x[k], (m.get(x[k]) ?? 0) + 1);
         return [...m.entries()].sort((p, q) => q[1] - p[1])[0]?.[0] ?? '';
       };
+      // Re-classify the most common payload: old logs get today's lookup
+      // tables (the CSV's vendor column is what the app knew at capture time).
+      const ads = new Map<string, number>();
+      for (const x of a) if (x.ad) ads.set(x.ad, (ads.get(x.ad) ?? 0) + 1);
+      const topAd = [...ads.entries()].sort((p, q) => q[1] - p[1])[0]?.[0];
+      const cls = topAd ? classify(mac, topAd) : null;
       return {
         mac,
         n: a.length,
         first: a[0].t,
         last: a[a.length - 1].t,
-        name: mode('name'),
-        vendor: mode('vendor'),
+        name: mode('name') || cls?.name || '',
+        vendor: cls?.vendor ?? mode('vendor'),
+        kind: cls?.labels.find(l => !GENERIC_LABEL.test(l)) ?? '',
         police: mode('police'),
         shards: new Set(a.filter(x => x.shardOf).map(x => x.shardOf)).size,
         centroid,
@@ -221,6 +234,7 @@ export interface MapDevice {
   mac: string;
   name: string;
   vendor: string;
+  kind: string;
   police: string;
   n: number;
   hunts: string[];
@@ -236,11 +250,12 @@ export function combineHunts(hunts: Hunt[]): MapDevice[] {
     for (const d of h.devices) {
       let x = byMac.get(d.mac);
       if (!x) {
-        x = {mac: d.mac, name: '', vendor: '', police: '', n: 0, hunts: [], points: [], est: {lat: 0, lon: 0, r: 0}};
+        x = {mac: d.mac, name: '', vendor: '', kind: '', police: '', n: 0, hunts: [], points: [], est: {lat: 0, lon: 0, r: 0}};
         byMac.set(d.mac, x);
       }
       x.name ||= d.name;
       x.vendor ||= d.vendor;
+      x.kind ||= d.kind;
       x.police ||= d.police;
       x.n += d.n;
       x.hunts.push(h.name);

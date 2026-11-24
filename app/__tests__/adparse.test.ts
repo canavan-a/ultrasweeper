@@ -73,3 +73,47 @@ describe('classify', () => {
     }
   });
 });
+
+// Synthetic frames (made-up addresses) for the payload decoders and the
+// full SIG registry lookups.
+const ADVA = 'EFCDAB896745'; // 45:67:89:AB:CD:EF, air order
+const MAC = '45:67:89:AB:CD:EF';
+// fullAd: the AD length the advertiser declared (real captures are cut short by the 32-byte FIFO)
+const frame = (header: string, ad: string, fullAd = ad.length / 2) => header + (fullAd + 6).toString(16).padStart(2, '0') + ADVA + ad;
+
+describe('classify: decoders and registry', () => {
+  it('decodes the Microsoft CDP device type', () => {
+    expect(classify('17:B6:37:14:BE:39', MSVP_BLOB).labels[0]).toBe('Windows desktop (Microsoft CDP beacon)');
+    const laptop = classify(MAC, frame('42', '1EFF0600010F2022' + '00'.repeat(8), 31));
+    expect(laptop.labels[0]).toBe('Windows laptop (Microsoft CDP beacon)');
+    expect(laptop.labels).toContain('Microsoft presence (MSVP) advertisement');
+  });
+
+  it('names Apple continuity types, leaving unknown ones generic', () => {
+    expect(classify(MAC, frame('42', '0AFF4C000906' + '00'.repeat(6))).labels[0]).toBe('Apple AirPlay target');
+    expect(classify(MAC, frame('42', '1EFF4C001219' + '00'.repeat(20), 31)).labels[0]).toBe('Apple Find My');
+    expect(classify('70:EF:9D:3F:0C:1D', APPLE_BLOB).labels[0]).toBe('Apple advertisement');
+  });
+
+  it('decodes an Eddystone frame and names the vendor from its member UUID', () => {
+    const c = classify(MAC, frame('02', '0303AAFE1716AAFE00ED' + '11'.repeat(16), 28));
+    expect(c.labels[0]).toBe('Eddystone-UID beacon');
+    expect(c.vendor).toBe('Google LLC');
+    expect(c.labels).toContain('Google LLC service FEAA');
+  });
+
+  it('reads a Fast Pair model ID only from an untruncated discoverable frame', () => {
+    expect(classify(MAC, frame('42', '06162CFEAABBCC')).labels[0]).toBe('Google Fast Pair accessory, model 0xAABBCC');
+  });
+
+  it('recognises a known vendor 128-bit service', () => {
+    // 1B19B844-038F-11E5-8418-1697F925EC7B, little-endian on air
+    const c = classify(MAC, frame('00', '020106' + '11067BEC25F997161884E5118F0344B8191B'));
+    expect(c.labels[0]).toBe('Xirgo vehicle telematics / ELD (engine service)');
+  });
+
+  it('falls back to the full SIG company registry', () => {
+    // 0x0E9F is not in the curated list
+    expect(classify(MAC, frame('00', '020106' + '05FF9F0E0102')).vendor).toBe('Owlet Baby Care Inc.');
+  });
+});

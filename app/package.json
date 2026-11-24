@@ -9,7 +9,8 @@
     "gen-oui": "node tools/gen-oui.mjs",
     "gen-icon": "node tools/gen-icon.mjs",
     "lint": "eslint .",
-    "test": "jest"
+    "test": "jest",
+    "gen-sig": "node tools/gen-sig.mjs"
   },
   "dependencies": {
     "@maplibre/maplibre-react-native": "^10.4.2",

@@ -140,6 +140,29 @@ describe('policeMatch', () => {
     expect(match('C3:00:00:00:03:02', ad(0x03, '8EFD'))).toMatchObject({confidence: 'possible'});
   });
 
+  it('flags Yardarm holster sensors as likely and Tait radios as possible', () => {
+    expect(match('C3:00:00:00:04:01', ad(0xff, '5F020000'))).toMatchObject({label: 'Yardarm holster/firearm sensor', confidence: 'likely'});
+    expect(match('C3:00:00:00:04:02', ad(0xff, '8F080000'))).toMatchObject({label: 'Tait radio', confidence: 'possible'});
+  });
+
+  it('flags i-PRO, Tait and Cradlepoint address blocks as possible', () => {
+    // D4's top bits look "random", but the header marks it public, as real hardware does
+    const ipro = 'D4:2D:C5:00:00:01';
+    const f = frameWith(ipro, false, ad(0x01, '06'));
+    expect(policeMatch(ipro, classify(ipro, f), f)).toMatchObject({label: 'i-PRO', confidence: 'possible'});
+    expect(match('00:0D:CA:00:00:01', ad(0x01, '06'))).toMatchObject({confidence: 'possible'});
+    expect(match('00:30:44:00:00:01', ad(0x01, '06'))).toMatchObject({label: 'Cradlepoint (vehicle router)', confidence: 'possible'});
+  });
+
+  it('counts old Raven services only as the pair, and only as possible', () => {
+    expect(match('C3:00:00:00:05:01', ad(0x03, '09181918'))).toMatchObject({label: 'Flock Raven (gunshot sensor)', confidence: 'possible'});
+    expect(match('C3:00:00:00:05:02', ad(0x03, '0918'))).toBeNull(); // a plain health thermometer
+  });
+
+  it('does not treat Openpath door readers (FE04) as Motorola', () => {
+    expect(match('C3:00:00:00:06:01', ad(0x03, '04FE'))).toBeNull();
+  });
+
   it('leaves ordinary devices alone', () => {
     const mac = '70:EF:9D:3F:0C:1D';
     expect(policeMatch(mac, classify(mac, APPLE_BLOB))).toBeNull();

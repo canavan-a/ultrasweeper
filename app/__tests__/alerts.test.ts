@@ -9,7 +9,7 @@ import {settingsStore} from '../src/settings';
 
 const likely: PoliceMatch = {label: 'Axon', confidence: 'likely', reasons: ['test']};
 const possible: PoliceMatch = {label: 'Motorola Solutions', confidence: 'possible', reasons: ['test']};
-const dev = (mac: string, police: PoliceMatch | null) => ({mac, police});
+const dev = (mac: string, police: PoliceMatch | null, sightings = 2) => ({mac, police, sightings});
 
 const display = notifee.displayNotification as jest.Mock;
 const flush = () => new Promise(r => setImmediate(r));
@@ -62,6 +62,14 @@ describe('checkPoliceAlerts', () => {
     checkPoliceAlerts([dev('GG', likely)], 5_000_000);
     await flush();
     expect(lastChannel()).toBe(alertChannelId(false, true));
+  });
+
+  it('waits for a second sighting before alerting on a possible match', () => {
+    settingsStore.save({...settingsStore.get(), alertLevel: 'possible'});
+    expect(checkPoliceAlerts([dev('PP', possible, 1)], 7_000_000)).toEqual([]);
+    expect(checkPoliceAlerts([dev('PP', possible, 2)], 7_100_000).map(d => d.mac)).toEqual(['PP']);
+    // likely matches still alert on the first sighting
+    expect(checkPoliceAlerts([dev('LL', likely, 1)], 7_200_000).map(d => d.mac)).toEqual(['LL']);
   });
 
   it('does nothing when alerts are off', () => {

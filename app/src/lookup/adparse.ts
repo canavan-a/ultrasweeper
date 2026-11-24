@@ -10,6 +10,47 @@
 
 import {COMPANIES} from './companies';
 import {lookupOui} from './oui';
+import {sigCompany, sigService} from './sig';
+import {KNOWN_128} from './uuids128';
+
+// Apple Continuity message types (first byte after Apple's company ID).
+// Apple publishes no spec; names follow the public reverse-engineering
+// (furiousMAC "continuity" dissector).
+const APPLE_TYPES: Record<number, string> = {
+  0x03: 'AirPrint',
+  0x05: 'AirDrop',
+  0x06: 'HomeKit accessory',
+  0x07: 'AirPods/Beats pairing beacon',
+  0x08: 'Hey Siri',
+  0x09: 'AirPlay target',
+  0x0a: 'AirPlay source',
+  0x0b: 'Magic Switch',
+  0x0c: 'Handoff',
+  0x0d: 'Instant Hotspot (target)',
+  0x0e: 'Instant Hotspot (source)',
+  0x0f: 'Nearby Action',
+  0x10: 'Nearby Info',
+  0x12: 'Find My',
+};
+
+// Microsoft Connected Devices Platform beacon ([MS-CDP] "Bluetooth:
+// Advertising Beacon"): scenario byte 0x01, then the low 5 bits of the
+// next byte are the device type.
+const MS_CDP_DEVICE: Record<number, string> = {
+  1: 'Xbox One',
+  6: 'iPhone',
+  7: 'iPad',
+  8: 'Android device',
+  9: 'Windows desktop',
+  11: 'Windows phone',
+  12: 'Linux device',
+  13: 'Windows IoT device',
+  14: 'Surface Hub',
+  15: 'Windows laptop',
+  16: 'Windows tablet',
+};
+
+const EDDYSTONE_FRAMES: Record<number, string> = {0x00: 'UID', 0x10: 'URL', 0x20: 'TLM', 0x30: 'EID'};
 
 export interface AdStructure {
   type: number;
@@ -124,6 +165,9 @@ export function classify(mac: string, adHex: string): Classification {
   // randomized or synthetic, and its first three bytes prove nothing.
   out.randomAddress = (macBytes[0] & 0xc0) !== 0x00;
 
+  // Decoded, device-specific descriptions go first (the scan screen titles a
+  // device with labels[0]); registry names of its services go last.
+  const specific: string[] = [];
   const pdu = parsePdu(adHex);
   if (pdu) {
     // The advertising PDU header says it outright: TxAdd (bit 6) set means
@@ -151,6 +195,13 @@ export function classify(mac: string, adHex: string): Classification {
           }
           if (uuid === 'FE2C') {
             out.labels.push('Google Fast Pair device');
+            // discoverable mode carries just the 3-byte model ID
+            const model = s.data.slice(4);
+            if (model.length === 6 && !pdu.truncated) specific.push(`Google Fast Pair accessory, model 0x${model.toUpperCase()}`);
+          }
+          if (uuid.toUpperCase() === 'FEAA' && s.data.length >= 6) {
+            const frame = EDDYSTONE_FRAMES[parseInt(s.data.slice(4, 6), 16)];
+            if (frame) specific.push(`Eddystone-${frame} beacon`);
           }
         }
         break;
@@ -165,12 +216,13 @@ export function classify(mac: string, adHex: string): Classification {
           out.companyIds.push(company);
         }
         out.manufacturerData.push({company, data: s.data.slice(4)});
-        const vendor = COMPANIES[company];
+        const vendor = COMPANIES[company] ?? sigCompany(company);
         if (vendor) {
           out.vendor = out.vendor ?? vendor;
         }
         if (company === 0x004c) {
           const sub = parseInt(s.data.slice(4, 6), 16);
+          if (APPLE_TYPES[sub]) specific.push(`Apple ${APPLE_TYPES[sub]}`);
           if (sub === 0x02 && s.data.slice(6, 8) === '15') {
             out.labels.push('Apple iBeacon-format advertisement');
           } else if ([0x07, 0x08, 0x09, 0x10, 0x11, 0x12, 0x19].includes(sub)) {
@@ -182,6 +234,10 @@ export function classify(mac: string, adHex: string): Classification {
           }
         } else if (company === 0x0006) {
           out.labels.push('Microsoft presence (MSVP) advertisement');
+          if (s.data.slice(4, 6) === '01' && s.data.length >= 8) {
+            const type = MS_CDP_DEVICE[parseInt(s.data.slice(6, 8), 16) & 0x1f];
+            if (type) specific.push(`${type} (Microsoft CDP beacon)`);
+          }
         }
         break;
       }
@@ -209,6 +265,22 @@ export function classify(mac: string, adHex: string): Classification {
         break;
     }
     }
+  }
+
+  for (const u of out.serviceUuids128) {
+    const known = KNOWN_128[u];
+    if (known) specific.push(known);
+  }
+  const serviceNames = out.serviceUuids
+    .map(u => [u, sigService(u)] as const)
+    .filter(([, n]) => n)
+    .map(([u, n]) => `${n} service ${u.toUpperCase()}`);
+  out.labels = [...specific, ...out.labels, ...serviceNames];
+  if (!out.vendor) {
+    // No company ID: a SIG member UUID (0xFC00 and up, assigned to one
+    // company) names the vendor. Standard services (0x18xx) name nobody.
+    const owned = out.serviceUuids.find(u => parseInt(u, 16) >= 0xfc00 && sigService(u));
+    if (owned) out.vendor = sigService(owned);
   }
 
   if (!out.randomAddress) {

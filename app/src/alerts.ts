@@ -9,6 +9,10 @@
 // back alerts again. Several new matches at once share one notification.
 // A unit that rotates random addresses looks like a new device each time;
 // MIN_GAP_MS keeps that from becoming a constant stream of chimes.
+//
+// A 'possible' match must be heard at least MIN_POSSIBLE_SIGHTINGS times
+// before it alerts: nearly every record is CRC:S (no CRC check), so one
+// corrupted packet could otherwise ping. 'likely' matches alert at once.
 import notifee, {AndroidImportance, AndroidStyle} from '@notifee/react-native';
 
 import {alertChannelId, ensureChannels, PRESS_ACTION, SMALL_ICON} from './notifications';
@@ -17,17 +21,23 @@ import {settingsStore} from './settings';
 
 export const NID_POLICE = 'police-alert';
 const MIN_GAP_MS = 30_000;
+export const MIN_POSSIBLE_SIGHTINGS = 2;
 
 interface Alertable {
   mac: string;
   police: PoliceMatch | null;
+  /** times heard (DeviceEntry.sightings); missing counts as 1 */
+  sightings?: number;
 }
 
 const alerted = new Set<string>();
 let lastAlertAt = 0;
 
-function qualifies(m: PoliceMatch, level: 'likely' | 'possible'): boolean {
-  return level === 'possible' || m.confidence === 'likely';
+function qualifies(d: Alertable, level: 'likely' | 'possible'): boolean {
+  const m = d.police;
+  if (!m) return false;
+  if (m.confidence === 'likely') return true;
+  return level === 'possible' && (d.sightings ?? 1) >= MIN_POSSIBLE_SIGHTINGS;
 }
 
 /**
@@ -43,7 +53,7 @@ export function checkPoliceAlerts(view: Alertable[], now = Date.now()): Alertabl
 
   const s = settingsStore.get();
   if (!s.policeAlerts) return [];
-  const fresh = view.filter(d => d.police && qualifies(d.police, s.alertLevel) && !alerted.has(d.mac));
+  const fresh = view.filter(d => qualifies(d, s.alertLevel) && !alerted.has(d.mac));
   if (fresh.length === 0) return [];
   fresh.forEach(d => alerted.add(d.mac));
 
@@ -51,7 +61,7 @@ export function checkPoliceAlerts(view: Alertable[], now = Date.now()): Alertabl
   // channel — no chime or vibration, even if the last alert was dismissed.
   const loud = now - lastAlertAt >= MIN_GAP_MS;
   if (loud) lastAlertAt = now;
-  const total = view.filter(d => d.police && qualifies(d.police, s.alertLevel)).length;
+  const total = view.filter(d => qualifies(d, s.alertLevel)).length;
   postAlert(fresh, total, !loud).catch(err => console.warn('[alerts] notification failed', err));
   return fresh;
 }

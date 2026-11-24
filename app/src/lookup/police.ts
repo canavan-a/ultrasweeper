@@ -80,6 +80,8 @@ const VENDOR_OUIS: Record<string, string> = {
   '9C862B': 'Motorola Solutions',
   '001D96': 'WatchGuard Video',
   // Body-worn / in-car video
+  // i-PRO: Panasonic's former body-cam / in-car video line (also sells CCTV).
+  D42DC5: 'i-PRO',
   '0023BD': 'Digital Ally',
   '48468D': 'Zepcam',
   '0016ED': 'Utility Inc. (BodyWorn)',
@@ -88,13 +90,27 @@ const VENDOR_OUIS: Record<string, string> = {
   '0017F3': 'Harris (L3Harris)',
   '0006EC': 'Harris (L3Harris)',
   '0000C3': 'Harris (L3Harris)',
+  '000DCA': 'Tait (land-mobile radio)',
+  // In-vehicle routers: standard in patrol cars, but also sold to businesses.
+  '003044': 'Cradlepoint (vehicle router)',
+  '00E01C': 'Cradlepoint (vehicle router)',
   // Fixed surveillance infrastructure
   B41E52: 'Flock Safety',
   D411D6: 'ShotSpotter',
 };
 // Motorola Solutions IDs from ACAB's capture builds (never shipped there).
 const MOTOROLA_COMPANY_IDS = [0x04ec];
+// Not FE04: the SIG lists it under Motorola Solutions today, but it came
+// with Openpath (door-access readers) and would flag office badge readers.
 const MOTOROLA_SERVICE_UUIDS = ['FD8E'];
+
+// --- Other public-safety vendors (Bluetooth SIG registry) ----------------
+
+// Yardarm Technologies: firearm/holster sensors ("Holster Aware" in
+// Motorola's body-cam system) that tell cameras to start recording.
+const YARDARM_COMPANY_ID = 0x025f;
+// Tait International: land-mobile radios (police, fire, utilities).
+const TAIT_COMPANY_ID = 0x088f;
 
 // --- Flock Safety ---------------------------------------------------------
 
@@ -106,6 +122,10 @@ const FLOCK_BATTERY_UUID128 = 'E8CCBB38-9532-46A8-9FE5-1814DF172E6F';
 // Flock Raven (gunshot detection) services: GPS, power, network, upload,
 // error. Field-captured by ACAB.
 const FLOCK_RAVEN_UUIDS = ['3100', '3200', '3300', '3400', '3500'];
+// Raven firmware 1.1.x: Health Thermometer + Location and Navigation (GainSec
+// dataset via flock-you). Standard services, so only the pair counts, and
+// only as 'possible'.
+const FLOCK_RAVEN_OLD_UUIDS = ['1809', '1819'];
 
 // --- Names ---------------------------------------------------------------
 
@@ -215,6 +235,14 @@ export function policeMatch(mac: string, cls: Classification, adHex = ''): Polic
     if (MOTOROLA_SERVICE_UUIDS.includes(uuid)) hit('Motorola Solutions', 'possible', `Motorola service UUID ${uuid}`);
   }
 
+  // Yardarm, Tait
+  if (cls.companyIds.includes(YARDARM_COMPANY_ID)) {
+    hit('Yardarm holster/firearm sensor', 'likely', 'Yardarm Technologies company ID 0x025F');
+  }
+  if (cls.companyIds.includes(TAIT_COMPANY_ID)) {
+    hit('Tait radio', 'possible', 'Tait International company ID 0x088F');
+  }
+
   // Flock Safety
   if (cls.serviceUuids128.includes(FLOCK_BATTERY_UUID128)) {
     hit('Flock Safety', 'likely', 'Flock battery service UUID');
@@ -222,6 +250,9 @@ export function policeMatch(mac: string, cls: Classification, adHex = ''): Polic
   const ravenUuids = cls.serviceUuids.filter(u => FLOCK_RAVEN_UUIDS.includes(u));
   if (ravenUuids.length > 0) {
     hit('Flock Raven (gunshot sensor)', 'likely', `Flock Raven service UUID ${ravenUuids.join(', ')}`);
+  }
+  if (FLOCK_RAVEN_OLD_UUIDS.every(u => cls.serviceUuids.includes(u))) {
+    hit('Flock Raven (gunshot sensor)', 'possible', 'old Flock Raven services 1809 + 1819 together');
   }
   const hasFlockModule = cls.companyIds.includes(FLOCK_COMPANY_ID);
 

@@ -40,7 +40,7 @@ const HITBOX = {width: 32, height: 32};
 const POLICE_RED = '#e5484d';
 
 const isDark = (t: Theme) => !(t.name === 'light' || t.name === 'sepia');
-const deviceLabel = (d: MapDevice) => d.name || d.vendor || 'unnamed';
+const deviceLabel = (d: MapDevice) => d.name || d.kind || d.vendor || 'unnamed';
 
 export function MapScreen(): React.JSX.Element {
   const theme = useTheme();
@@ -149,7 +149,7 @@ export function MapScreen(): React.JSX.Element {
       if (filter === 'police' && !d.police) return false;
       if (filter === 'notpolice' && d.police) return false;
       if (filter === 'unusual' && !unusual.has(d.mac)) return false;
-      if (q && !`${d.name} ${d.vendor} ${d.mac}`.toLowerCase().includes(q)) return false;
+      if (q && !`${d.name} ${d.kind} ${d.vendor} ${d.mac}`.toLowerCase().includes(q)) return false;
       return true;
     });
   }, [devices, minN, filter, query, unusual]);
@@ -532,7 +532,8 @@ const DeviceRow = React.memo(function DeviceRow({
         </Text>
         <Text style={styles.rowSub} numberOfLines={1}>
           {d.mac}
-          {d.name && d.vendor ? ` · ${d.vendor}` : ''}
+          {d.name && d.kind ? ` · ${d.kind}` : ''}
+          {(d.name || d.kind) && d.vendor ? ` · ${d.vendor}` : ''}
           {unusual ? ` · ${unusual.reasons.map(r => r.tag).join(', ')}` : ''}
         </Text>
         {selected && (
