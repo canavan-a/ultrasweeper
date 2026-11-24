@@ -8,7 +8,7 @@
 // Basemap: OpenFreeMap (positron / dark), as in ../super-atlas. Analysis:
 // src/hunt/ (shard folding, unusual-device scoring).
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {
   Camera,
   CameraRef,
@@ -24,6 +24,7 @@ import {
 import {analyzeHunt, combineHunts, Hunt, huntLabel, MapDevice, parseCsv} from '../hunt/analysis';
 import {circleRing, deviceColor, fanOffset} from '../hunt/color';
 import {findUnusual, Unusual} from '../hunt/unusual';
+import {Icon} from '../components/Icon';
 import {formatBytes, huntLogAvailable, listLogs, LogFile, readLog} from '../huntlog';
 import {Theme, useTheme} from '../theme';
 
@@ -34,7 +35,6 @@ const FILTERS: {key: Filter; label: string}[] = [
   {key: 'notpolice', label: 'Not police'},
   {key: 'unusual', label: 'Unusual'},
 ];
-const DEFAULT_PICK = 3;
 /** finger-sized touch area around the dots, px */
 const HITBOX = {width: 32, height: 32};
 const POLICE_RED = '#e5484d';
@@ -62,13 +62,15 @@ export function MapScreen(): React.JSX.Element {
   const [showOthers, setShowOthers] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [pickList, setPickList] = useState<string[] | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // --- files ---
   useEffect(() => {
     listLogs()
       .then(fs => {
         setFiles(fs);
-        setPicked(new Set(fs.slice(0, DEFAULT_PICK).map(f => f.name)));
+        // nothing is picked by default: open the menu so hunts can be chosen
+        if (fs.length) setMenuOpen(true);
       })
       .catch(e => setError(String(e?.message ?? e)));
   }, []);
@@ -259,6 +261,16 @@ export function MapScreen(): React.JSX.Element {
 
   return (
     <View style={styles.root}>
+      <Pressable style={styles.topBar} onPress={() => setMenuOpen(true)} accessibilityLabel="Hunts and filters">
+        <Icon name="filter" size={18} color={theme.text} />
+        <Text style={styles.topBarTxt} numberOfLines={1}>
+          {picked.size === 0
+            ? 'No hunts picked: tap to choose'
+            : `${picked.size} hunt${picked.size > 1 ? 's' : ''} · ${FILTERS.find(f => f.key === filter)!.label} · ≥${minN} seen${fan ? ' · fan' : ''}`}
+        </Text>
+        <Text style={styles.link}>Filters</Text>
+      </Pressable>
+
       <View style={styles.mapWrap}>
         <MapView
           style={styles.map}
@@ -359,41 +371,72 @@ export function MapScreen(): React.JSX.Element {
         )}
       </View>
 
-      <View style={styles.panel}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-          {files == null ? (
-            <Text style={styles.muted}>Loading logs…</Text>
-          ) : files.length === 0 ? (
-            <Text style={styles.muted}>No hunt logs yet. Connect the scanner to record one.</Text>
-          ) : (
-            files.map(f => (
-              <Chip
-                key={f.name}
-                styles={styles}
-                active={picked.has(f.name)}
-                label={`${huntLabel(f.name)}${f.open ? ' ●' : ''}`}
-                sub={formatBytes(f.size)}
-                onPress={() => togglePick(f.name)}
-              />
-            ))
-          )}
-        </ScrollView>
+      <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
+        <Pressable style={styles.backdrop} onPress={() => setMenuOpen(false)} />
+        <View style={styles.sheet}>
+          <ScrollView contentContainerStyle={styles.sheetBody}>
+            <Text style={styles.sheetH}>Hunt sessions</Text>
+            <View style={styles.wrap}>
+              {files == null ? (
+                <Text style={styles.muted}>Loading logs…</Text>
+              ) : files.length === 0 ? (
+                <Text style={styles.muted}>No hunt logs yet. Connect the scanner to record one.</Text>
+              ) : (
+                files.map(f => (
+                  <Chip
+                    key={f.name}
+                    styles={styles}
+                    active={picked.has(f.name)}
+                    label={`${huntLabel(f.name)}${f.open ? ' ●' : ''}`}
+                    sub={formatBytes(f.size)}
+                    onPress={() => togglePick(f.name)}
+                  />
+                ))
+              )}
+            </View>
+            {files && files.length > 1 ? (
+              <View style={styles.inlineLinks}>
+                <Pressable onPress={() => setPicked(new Set(files.map(f => f.name)))} hitSlop={8}>
+                  <Text style={styles.link}>Select all</Text>
+                </Pressable>
+                <Pressable onPress={() => setPicked(new Set())} hitSlop={8}>
+                  <Text style={styles.link}>Select none</Text>
+                </Pressable>
+              </View>
+            ) : null}
 
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-          {FILTERS.map(f => (
-            <Chip key={f.key} styles={styles} active={filter === f.key} label={`${f.label} ${counts[f.key]}`} onPress={() => setFilter(f.key)} />
-          ))}
-          <View style={styles.stepper}>
-            <Pressable style={styles.stepBtn} onPress={() => setMinN(n => Math.max(1, n - 1))} hitSlop={6} accessibilityLabel="Fewer minimum sightings">
-              <Text style={styles.stepTxt}>−</Text>
-            </Pressable>
-            <Text style={styles.stepLabel}>≥{minN} seen</Text>
-            <Pressable style={styles.stepBtn} onPress={() => setMinN(n => Math.min(50, n + 1))} hitSlop={6} accessibilityLabel="More minimum sightings">
-              <Text style={styles.stepTxt}>+</Text>
-            </Pressable>
-          </View>
-          <Chip styles={styles} active={fan} label="Fan out" onPress={() => setFan(v => !v)} />
-        </ScrollView>
+            <Text style={styles.sheetH}>Show</Text>
+            <View style={styles.wrap}>
+              {FILTERS.map(f => (
+                <Chip key={f.key} styles={styles} active={filter === f.key} label={`${f.label} ${counts[f.key]}`} onPress={() => setFilter(f.key)} />
+              ))}
+            </View>
+
+            <Text style={styles.sheetH}>Minimum sightings per device</Text>
+            <View style={styles.wrap}>
+              <View style={styles.stepper}>
+                <Pressable style={styles.stepBtn} onPress={() => setMinN(n => Math.max(1, n - 1))} hitSlop={6} accessibilityLabel="Fewer minimum sightings">
+                  <Text style={styles.stepTxt}>−</Text>
+                </Pressable>
+                <Text style={styles.stepLabel}>≥{minN} seen</Text>
+                <Pressable style={styles.stepBtn} onPress={() => setMinN(n => Math.min(50, n + 1))} hitSlop={6} accessibilityLabel="More minimum sightings">
+                  <Text style={styles.stepTxt}>+</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            <Text style={styles.sheetH}>Dots</Text>
+            <View style={styles.wrap}>
+              <Chip styles={styles} active={fan} label="Fan out devices at the same spot" onPress={() => setFan(v => !v)} />
+            </View>
+          </ScrollView>
+          <Pressable style={styles.done} onPress={() => setMenuOpen(false)}>
+            <Text style={styles.doneTxt}>Done</Text>
+          </Pressable>
+        </View>
+      </Modal>
+
+      <View style={styles.panel}>
 
         <TextInput
           style={styles.search}
@@ -421,6 +464,8 @@ export function MapScreen(): React.JSX.Element {
             <Text style={styles.muted}>
               {error
                 ? error
+                : picked.size === 0
+                ? 'No hunts picked. Open Filters above to choose some.'
                 : `${visible.length} devices · ${sightingsShown} sightings. Tap to isolate, long-press to add.`}
             </Text>
           )}
@@ -516,7 +561,36 @@ function makeStyles(t: Theme) {
     map: {flex: 1},
     loading: {position: 'absolute', top: 10, left: 10, padding: 8, borderRadius: 8, backgroundColor: t.surface},
     panel: {flex: 9, borderTopWidth: 1, borderTopColor: t.border, backgroundColor: t.bg},
-    chipRow: {paddingHorizontal: 10, paddingTop: 8, gap: 6, alignItems: 'center'},
+    topBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: t.border,
+      backgroundColor: t.surface,
+    },
+    topBarTxt: {flex: 1, fontSize: 13, color: t.text},
+    backdrop: {...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.35)'},
+    sheet: {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      maxHeight: '85%',
+      backgroundColor: t.bg,
+      borderBottomLeftRadius: 14,
+      borderBottomRightRadius: 14,
+      borderBottomWidth: 1,
+      borderColor: t.border,
+    },
+    sheetBody: {padding: 16, paddingBottom: 8},
+    sheetH: {fontSize: 12, fontWeight: '700', color: t.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 14, marginBottom: 8},
+    wrap: {flexDirection: 'row', flexWrap: 'wrap', gap: 8},
+    inlineLinks: {flexDirection: 'row', gap: 18, marginTop: 10},
+    done: {margin: 12, marginTop: 4, paddingVertical: 12, borderRadius: 10, alignItems: 'center', backgroundColor: t.text},
+    doneTxt: {fontSize: 15, fontWeight: '700', color: t.bg},
     chip: {
       flexDirection: 'row',
       alignItems: 'baseline',
@@ -537,6 +611,7 @@ function makeStyles(t: Theme) {
     stepTxt: {fontSize: 16, color: t.text, fontWeight: '700'},
     stepLabel: {fontSize: 13, color: t.text, fontVariant: ['tabular-nums']},
     search: {
+      flexShrink: 0,
       marginHorizontal: 10,
       marginTop: 8,
       paddingHorizontal: 10,
@@ -548,7 +623,7 @@ function makeStyles(t: Theme) {
       backgroundColor: t.surface,
       fontSize: 13,
     },
-    statusRow: {flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6},
+    statusRow: {flexShrink: 0, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6},
     muted: {fontSize: 12, color: t.textMuted},
     link: {fontSize: 12, color: t.primary, fontWeight: '600'},
     row: {
