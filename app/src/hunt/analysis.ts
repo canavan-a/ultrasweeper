@@ -458,6 +458,12 @@ export interface MapDevice {
   cls: Classification | null;
   /** re-classifications from the other payloads it was heard with */
   payloads: DevicePayload[];
+  /**
+   * shard MACs folded into this device in any picked hunt (bit-error copies
+   * of its address). With Settings → mergeGlitches off the scan screen
+   * lists each as its own device, so a flag can name one of them.
+   */
+  aliases: string[];
   hunts: string[];
   /** sightings that had a fix, across all picked hunts */
   points: {t: number; lat: number; lon: number; hunt: string}[];
@@ -472,7 +478,7 @@ export function combineHunts(hunts: Hunt[]): MapDevice[] {
     for (const d of h.devices) {
       let x = byMac.get(d.mac);
       if (!x) {
-        x = {mac: d.mac, name: '', vendor: '', kind: '', police: '', n: 0, cls: null, payloads: [], hunts: [], points: [], est: {lat: 0, lon: 0, r: 0}};
+        x = {mac: d.mac, name: '', vendor: '', kind: '', police: '', n: 0, cls: null, payloads: [], aliases: [], hunts: [], points: [], est: {lat: 0, lon: 0, r: 0}};
         byMac.set(d.mac, x);
       }
       x.name ||= d.name;
@@ -490,6 +496,9 @@ export function combineHunts(hunts: Hunt[]): MapDevice[] {
       }
       x.n += d.n;
       x.hunts.push(h.name);
+      const shards = new Set(x.aliases);
+      for (const s of d.sightings) if (s.shardOf) shards.add(s.shardOf);
+      x.aliases = [...shards];
       for (const s of d.sightings) {
         if (s.lat != null && s.lon != null) x.points.push({t: s.t, lat: s.lat, lon: s.lon, hunt: h.name});
       }

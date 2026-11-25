@@ -55,6 +55,12 @@ describe('analyzeHunt', () => {
     expect(hunt.devices.find(x => x.mac === other)?.n).toBe(2);
   });
 
+  test('the map device lists the shard MACs folded into it', () => {
+    const d = combineHunts([hunt]).find(x => x.mac === loud)!;
+    expect(d.aliases).toEqual([shard]);
+    expect(combineHunts([hunt]).find(x => x.mac === other)!.aliases).toEqual([]);
+  });
+
   test('does not fold when folding is off', () => {
     const h = analyzeHunt('x', parseCsv(csv(rows)), {merge: false});
     expect(h.devices).toHaveLength(3);

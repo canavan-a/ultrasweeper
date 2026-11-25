@@ -25,8 +25,7 @@ import {
 
 import {analyzeHunt, combineHunts, Hunt, huntLabel, MapDevice, parseCsv} from '../hunt/analysis';
 import {circleRing, deviceColor, fanOffset} from '../hunt/color';
-import {MatchOptions, matchedNotes, matchDevicePayloads, useFlagsSnapshot} from '../flags';
-import type {Classification} from '../lookup/adparse';
+import {MatchOptions, matchedNotes, matchLoggedDevice, useFlagsSnapshot} from '../flags';
 import {findUnusual, Unusual} from '../hunt/unusual';
 import {Icon} from '../components/Icon';
 import {formatBytes, huntLogAvailable, listLogs, LogFile, readLog} from '../huntlog';
@@ -45,18 +44,6 @@ const FILTERS: {key: Filter; label: string}[] = [
 const HITBOX = {width: 32, height: 32};
 const POLICE_RED = '#e5484d';
 const FLAG_RED = '#e5484d';
-
-// an empty classification for a device with no AD capture: only name/oui/
-// mac matchers can land on it, filled from the CSV's own columns below
-const EMPTY_CLS: Classification = {
-  labels: [],
-  serviceUuids: [],
-  serviceUuids128: [],
-  companyIds: [],
-  manufacturerData: [],
-  eddystoneUids: [],
-  randomAddress: false,
-};
 
 const isDark = (t: Theme) => !(t.name === 'light' || t.name === 'sepia');
 const deviceLabel = (d: MapDevice) => d.name || d.kind || d.vendor || 'unnamed';
@@ -130,7 +117,8 @@ export function MapScreen(): React.JSX.Element {
   // MAC glitch tolerance follows Settings → mergeGlitches, as on the scan
   // screen: the map's shard folding also demands a loudness ratio and a
   // time window, so with merging off two distinct near-MACs stay distinct
-  // and a flag must not hop between them.
+  // and a flag must not hop between them. A flag naming a shard the map
+  // did fold still lands, on the address exactly (matchLoggedDevice).
   const flags = useFlagsSnapshot();
   const [mergeGlitches, setMergeGlitches] = useState(settingsStore.get().mergeGlitches);
   useEffect(() => {
@@ -151,17 +139,13 @@ export function MapScreen(): React.JSX.Element {
     for (const d of devices) {
       // One match per payload this MAC was heard with, exactly as the scan
       // screen matches one advertisement: a name from one frame and a
-      // service UUID from another never add up to one match.
-      const payloads: Classification[] = d.payloads.map(p => p.cls);
-      // A stub always rides along: a MAC or OUI matcher reads the address
-      // and needs some classification to be handed a record at all, which
-      // matters for a device logged without any AD capture. Its name column
-      // is what the logger decoded at capture time (a majority vote over the
-      // rows), so a name flag also hits a device whose re-decoded payloads
-      // lost the name; without AD it is all there is. The stub carries no
-      // payload fields, so it can only add a name hit.
-      payloads.push({...EMPTY_CLS, name: d.name || undefined});
-      const matched = matchDevicePayloads(flags, payloads, d.mac, opts).filter(m => m.record.flag);
+      // service UUID from another never add up to one match. The logged
+      // name and the shard MACs folded in ride along (see matchLoggedDevice).
+      const matched = matchLoggedDevice(
+        flags,
+        {mac: d.mac, name: d.name, payloads: d.payloads.map(p => p.cls), aliases: d.aliases},
+        opts,
+      ).filter(m => m.record.flag);
       if (matched.length) {
         out.set(d.mac, matchedNotes(matched));
       }

@@ -204,6 +204,68 @@ export function matchDevicePayloads(
   return out;
 }
 
+// a classification with no payload fields: only name/oui/mac matchers can
+// land on it
+const NO_PAYLOAD: Classification = {
+  labels: [],
+  serviceUuids: [],
+  serviceUuids128: [],
+  companyIds: [],
+  manufacturerData: [],
+  eddystoneUids: [],
+  randomAddress: false,
+};
+
+/** a device read back from hunt logs (the Map screen) */
+export interface LoggedDevice {
+  mac: string;
+  /** the logger's own name column (decoded at capture time) */
+  name: string;
+  /** re-decoded advertisements it was heard with, matched one at a time */
+  payloads: Classification[];
+  /** shard MACs folded into it: bit-error copies of its address */
+  aliases: string[];
+}
+
+/**
+ * Every record that lands on a logged device: each advertisement matched
+ * apart (matchDevicePayloads), plus a stub carrying only the logged name -
+ * a MAC or OUI matcher reads the address and needs some classification to
+ * be handed a record at all, which matters for a device logged without
+ * any AD capture, and the name column is what the logger decoded at the
+ * time. The stub has no payload fields, so it can only add a name hit.
+ *
+ * Shard MACs count for `mac` matchers, exactly: the map always folds
+ * shards, but with Settings → mergeGlitches off the scan screen lists a
+ * shard as its own device, and a flag made on that row names only the
+ * shard's address. Nothing else is read from a shard address (an OUI from
+ * a bit-flipped address proves nothing), and the match is exact, since a
+ * shard is already within the glitch distance of the device it folded
+ * into.
+ */
+export function matchLoggedDevice(
+  snapshot: FlagsSnapshot,
+  device: LoggedDevice,
+  opts: MatchOptions = {},
+): MatchedFlag[] {
+  const out = matchDevicePayloads(
+    snapshot,
+    [...device.payloads, {...NO_PAYLOAD, name: device.name || undefined}],
+    device.mac,
+    opts,
+  );
+  const seen = new Set(out.map(m => `${m.source}:${m.record.id}`));
+  for (const alias of device.aliases) {
+    for (const m of matchDevice(snapshot, NO_PAYLOAD, alias, {glitchTolerant: false})) {
+      const key = `${m.source}:${m.record.id}`;
+      if (m.hit.kind !== 'mac' || seen.has(key)) continue;
+      seen.add(key);
+      out.push(m);
+    }
+  }
+  return out;
+}
+
 /**
  * The on-phone record a scan row edits: the one created for this exact
  * MAC if it matched, else any other local record that lands on the device
