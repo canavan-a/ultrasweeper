@@ -238,15 +238,18 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
       // advertisement at a time, so a flag can never read fields that were
       // never in the same frame.
       //
-      // Payloads whose CRC only checked out structurally ('S') are left out
-      // unless nothing better was heard: a bit-corrupt frame seen once would
-      // otherwise add a name or UID the device never broadcasts. Of the rest,
-      // a few representatives of each distinct advertisement shape are
-      // decoded - shapes are what differs between a phone's rotating
-      // payloads (unbounded, all decoding alike) and the separate frame a
-      // beacon sends now and then (an Eddystone UID, a service UUID), and
-      // picking the most frequent payloads alone would drop the latter.
-      // Decodings that come out identical are then collapsed.
+      // Payloads whose CRC only checked out structurally ('S') are the
+      // common case, not garbage to throw away: they carry most real frames,
+      // and a bit-flipped copy almost never matches a flag exactly anyway
+      // (it would have to land on the very name or UID the owner wrote
+      // down). They rank below the frames that passed a CRC check, which is
+      // all the difference the ranking makes. Of what is left, a few
+      // representatives of each distinct advertisement shape are decoded:
+      // shapes are what differs between a phone's rotating payloads
+      // (unbounded, all decoding alike) and the separate frame a beacon
+      // sends now and then (an Eddystone UID, a service UUID), and picking
+      // the most frequent payloads alone would drop the latter. Decodings
+      // that come out identical are then collapsed.
       const seenAd = new Map<string, {n: number; crc: string}>();
       for (const x of a) {
         if (!x.ad) continue;
@@ -262,16 +265,34 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
       // description: the best-verified common payload, as the scan screen's
       // engine picks one advertisement per device (src/devices.ts)
       const cls = ranked.length ? classify(mac, ranked[0][0]) : null;
-      const clean = ranked.filter(([, e]) => e.crc !== 'S');
-      const shapes = new Map<string, number>();
-      const samples: string[] = [];
-      for (const [ad] of clean.length ? clean : ranked) {
-        if (samples.length >= MAX_CLASSIFIED) break;
+      // one sample per shape first: a rare frame type keeps its sample
+      // however many more frequent shapes the device also sends. Inside a
+      // shape only the best-verified tier counts: a frame that passed its
+      // CRC check outranks the bit-flipped copies of it, but where nothing
+      // better was heard the structure-only copy is used, because that is
+      // how nearly every real frame in these logs arrives.
+      const bestFirst = [...seenAd.entries()].sort(
+        (p, q) =>
+          crcRank(q[1].crc) - crcRank(p[1].crc) || q[0].length - p[0].length || q[1].n - p[1].n,
+      );
+      const byShape = new Map<string, string[]>();
+      const shapeTier = new Map<string, number>();
+      for (const [ad, e] of bestFirst) {
         const shape = advertisementShape(ad);
-        const taken = shapes.get(shape) ?? 0;
-        if (taken >= MAX_PER_SHAPE) continue;
-        shapes.set(shape, taken + 1);
-        samples.push(ad);
+        const rank = crcRank(e.crc);
+        const best = shapeTier.get(shape);
+        if (best === undefined) shapeTier.set(shape, rank);
+        else if (best !== rank) continue;
+        const list = byShape.get(shape);
+        if (!list) byShape.set(shape, [ad]);
+        else if (list.length < MAX_PER_SHAPE) list.push(ad);
+      }
+      const samples: string[] = [];
+      for (let round = 0; round < MAX_PER_SHAPE && samples.length < MAX_CLASSIFIED; round++) {
+        for (const list of byShape.values()) {
+          if (samples.length >= MAX_CLASSIFIED) break;
+          if (list[round]) samples.push(list[round]);
+        }
       }
       const payloads: Classification[] = [];
       const decoded = new Set<string>();
@@ -347,19 +368,36 @@ function payloadSignature(c: Classification): string {
 }
 
 /**
- * Concatenate two devices' payload lists (same MAC, different hunts), keeping
- * the first copy of each distinct decoding and the overall cap.
+ * Join one MAC's payload lists from every picked hunt. The lists are taken
+ * one payload at a time in turn - one from each hunt before a second from
+ * any - so a frame only heard in a later hunt is not cut by the cap when
+ * an earlier hunt happens to fill it with its own. Decodings that come out
+ * identical collapse to one copy regardless of hunt.
  */
-function mergePayloads(a: Classification[], b: Classification[]): Classification[] {
-  if (!a.length) return b.slice(0, MAX_PAYLOADS);
-  const out = a.slice();
-  const seen = new Set(out.map(payloadSignature));
-  for (const c of b) {
-    const sig = payloadSignature(c);
-    if (seen.has(sig)) continue;
-    seen.add(sig);
-    out.push(c);
-    if (out.length >= MAX_PAYLOADS) break;
+function mergePayloads(sets: Classification[][]): Classification[] {
+  const out: Classification[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < MAX_PAYLOADS; i++) {
+    let any = false;
+    for (const set of sets) {
+      const c = set[i];
+      if (!c) {
+        continue;
+      }
+      any = true;
+      const sig = payloadSignature(c);
+      if (seen.has(sig)) {
+        continue;
+      }
+      seen.add(sig);
+      out.push(c);
+      if (out.length >= MAX_PAYLOADS) {
+        return out;
+      }
+    }
+    if (!any) {
+      break;
+    }
   }
   return out;
 }
@@ -384,6 +422,7 @@ export interface MapDevice {
 
 export function combineHunts(hunts: Hunt[]): MapDevice[] {
   const byMac = new Map<string, MapDevice>();
+  const payloadSets = new Map<string, Classification[][]>();
   for (const h of hunts) {
     for (const d of h.devices) {
       let x = byMac.get(d.mac);
@@ -396,12 +435,25 @@ export function combineHunts(hunts: Hunt[]): MapDevice[] {
       x.kind ||= d.kind;
       x.police ||= d.police;
       x.cls ??= d.cls;
-      x.payloads = mergePayloads(x.payloads, d.payloads);
+      if (d.payloads.length) {
+        const sets = payloadSets.get(d.mac);
+        if (sets) {
+          sets.push(d.payloads);
+        } else {
+          payloadSets.set(d.mac, [d.payloads]);
+        }
+      }
       x.n += d.n;
       x.hunts.push(h.name);
       for (const s of d.sightings) {
         if (s.lat != null && s.lon != null) x.points.push({t: s.t, lat: s.lat, lon: s.lon, hunt: h.name});
       }
+    }
+  }
+  for (const [mac, sets] of payloadSets) {
+    const x = byMac.get(mac);
+    if (x) {
+      x.payloads = mergePayloads(sets);
     }
   }
   const out = [...byMac.values()].filter(d => d.points.length);

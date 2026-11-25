@@ -153,14 +153,14 @@ export function MapScreen(): React.JSX.Element {
       // screen matches one advertisement: a name from one frame and a
       // service UUID from another never add up to one match.
       const payloads: Classification[] = [...d.payloads];
-      // the CSV's own name column rides along too: it is what the logger
-      // decoded at capture time (a majority vote over the rows), and a
-      // device with no AD capture has nothing else. The stub carries no
-      // payload fields, so it can only ever add a name hit; an OUI or MAC
-      // matcher reads the MAC, not the classification.
-      if (d.name) {
-        payloads.push({...EMPTY_CLS, name: d.name});
-      }
+      // A stub always rides along: a MAC or OUI matcher reads the address
+      // and needs some classification to be handed a record at all, which
+      // matters for a device logged without any AD capture. Its name column
+      // is what the logger decoded at capture time (a majority vote over the
+      // rows), so a name flag also hits a device whose re-decoded payloads
+      // lost the name; without AD it is all there is. The stub carries no
+      // payload fields, so it can only add a name hit.
+      payloads.push({...EMPTY_CLS, name: d.name || undefined});
       const matched = matchDevicePayloads(flags, payloads, d.mac, opts).filter(m => m.record.flag);
       if (matched.length) {
         out.set(d.mac, matchedNotes(matched));

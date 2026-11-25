@@ -128,10 +128,11 @@ describe('combineHunts / estimate', () => {
     expect(d.payloads.some(c => !c.eddystoneUids.length)).toBe(true);
   });
 
-  test('ignores payloads that only checked out structurally', () => {
-    // nearly every record is CRC:S, so those are used when nothing better
-    // was heard; but a frame with a full CRC check outranks them, and a
-    // corrupt frame seen once must not add an evidence a flag can hit on
+  test('a CRC-checked frame outranks bit-flipped copies of the same shape', () => {
+    // nearly every record is CRC:S, and those are used - most real frames
+    // arrive that way. But where the same advertisement form also passed a
+    // CRC check, only that tier is sampled: a bit-corrupt copy seen once
+    // must not add a name or UID the device never broadcasts
     const tag = '7A:11:22:33:44:59';
     const eddy = (mac: string) => {
       const ad = '0303AAFE1716AAFE00ED' + '22'.repeat(16);
@@ -191,6 +192,38 @@ describe('combineHunts / estimate', () => {
       // every hunt's evidence is available, and each stays inside its frame
       expect(d.payloads.some(c => c.companyIds.includes(0x4c))).toBe(true); // Apple, from one hunt only
       expect(d.payloads.some(c => c.name === 'AirTag-9')).toBe(true); // name, from another hunt only
+    }
+  });
+
+  test('a rare frame survives a hunt that filled the payload list', () => {
+    // one hunt's cap could otherwise crowd out the frame only the other
+    // hunt heard, depending on the order the hunts are picked: the merge
+    // takes turns between them
+    const tag = '7A:11:22:33:44:61';
+    const named = (n: number) => {
+      // flags + Complete Local Name, one length per row: each is another
+      // advertisement shape, so this hunt really has more payloads than the
+      // cap keeps
+      const name = 'x'.repeat(n);
+      const ad = `020106${(n + 1).toString(16).padStart(2, '0')}09${Buffer.from(name).toString('hex')}`;
+      return `00${(6 + ad.length / 2).toString(16).padStart(2, '0')}${advA(tag)}${ad}`;
+    };
+    const rows = Array.from({length: 15}, (_, i) => seen(i, tag, named(i + 1), 42.7, -73.8));
+    const many = analyzeHunt('many', parseCsv(csv(rows)));
+    expect(many.devices[0].payloads.length).toBe(12); // capped
+    const ed = '0303AAFE1716AAFE00ED' + '33'.repeat(16);
+    const beacon = analyzeHunt(
+      'beacon',
+      parseCsv(csv([seen(0, tag, `02${(ed.length / 2 + 8).toString(16).padStart(2, '0')}${advA(tag)}${ed}`, 42.7, -73.8)])),
+    );
+    for (const order of [
+      [many, beacon],
+      [beacon, many],
+    ]) {
+      const [d] = combineHunts(order);
+      expect(d.payloads.length).toBeLessThanOrEqual(12);
+      const uids = d.payloads.flatMap(c => c.eddystoneUids);
+      expect(uids).toEqual(['33333333333333333333']);
     }
   });
 });
