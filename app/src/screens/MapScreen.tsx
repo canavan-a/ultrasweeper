@@ -374,14 +374,6 @@ export function MapScreen(): React.JSX.Element {
           </ShapeSource>
           <ShapeSource id="dim" shape={shapes.off} hitbox={HITBOX} onPress={onDotsPress}>
             <CircleLayer
-              id="dim-dots"
-              style={{
-                circleRadius: ['interpolate', ['linear'], ['zoom'], 12, 1.5, 17, 4],
-                circleColor: dark ? '#5a5955' : '#b8b7b1',
-                circleOpacity: 0.45,
-              }}
-            />
-            <CircleLayer
               id="dim-flag-ring"
               filter={['==', ['get', 'flagged'], 1]}
               style={{
@@ -390,6 +382,14 @@ export function MapScreen(): React.JSX.Element {
                 circleStrokeColor: FLAG_RED,
                 circleStrokeOpacity: 0.7,
                 circleStrokeWidth: 1.5,
+              }}
+            />
+            <CircleLayer
+              id="dim-dots"
+              style={{
+                circleRadius: ['interpolate', ['linear'], ['zoom'], 12, 1.5, 17, 4],
+                circleColor: dark ? '#5a5955' : '#b8b7b1',
+                circleOpacity: 0.45,
               }}
             />
           </ShapeSource>
@@ -448,12 +448,12 @@ export function MapScreen(): React.JSX.Element {
             />
           </ShapeSource>
           <ShapeSource id="est-pt" shape={shapes.estPt}>
-            <CircleLayer id="est-dot" style={{circleRadius: 7, circleColor: ['get', 'color'], circleStrokeColor: surface, circleStrokeWidth: 2.5}} />
             <CircleLayer
               id="est-pt-flag-ring"
               filter={['==', ['get', 'flagged'], 1]}
               style={{circleRadius: 11, circleColor: 'rgba(0,0,0,0)', circleStrokeColor: FLAG_RED, circleStrokeWidth: 2.5}}
             />
+            <CircleLayer id="est-dot" style={{circleRadius: 7, circleColor: ['get', 'color'], circleStrokeColor: surface, circleStrokeWidth: 2.5}} />
             <SymbolLayer
               id="est-label"
               style={{
