@@ -26,7 +26,8 @@ USB-tethered to a phone (or any host); the device emits no RF.
   tagged with the phone's GPS fix. Each scanner connection is recorded
   locally as `hunt_YYYY-MM-DD_HH-MM-SS.csv` (one row per sighting / fix;
   columns in `app/src/huntlog.ts`), listed with sizes on the Logs screen
-  and shared or saved to Downloads from there. Nothing is uploaded. Dev:
+  and shared, saved to Downloads, or uploaded to a flags server from
+  there. Dev:
 
   ```sh
   nix develop -c bash -c 'cd app && npm ci && npx jest'
@@ -36,6 +37,15 @@ USB-tethered to a phone (or any host); the device emits no RF.
 
 - `release/` — signing setup + guided APK release (same sideload flow as
   super-badger; see `release/README.md`).
+
+- `flagsrv/` — optional LAN companion server (Go, `net/http` + sqlite,
+  no CGO): serves the flag records the app pulls, manages them over a
+  plain HTTP API, and stores uploaded hunt files in a directory. The
+  protocol is `FLAGS.md`; the app side is `app/src/flags.ts`:
+
+  ```sh
+  nix develop -c bash -c 'cd flagsrv && go test ./... && go run . -db flags.db -uploads ./uploads -upload-key <pw> -seed seed.json'
+  ```
 
 ## Conventions
 

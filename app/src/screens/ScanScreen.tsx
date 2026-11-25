@@ -2,11 +2,13 @@
 // classified device list. All data comes from the engine (App.tsx owns it);
 // this file is presentation only.
 import React, {useEffect, useState} from 'react';
-import {FlatList, Pressable, StyleSheet, Text, View} from 'react-native';
+import {FlatList, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
 
 import {formatAgo} from '../ago';
 import {Icon} from '../components/Icon';
 import type {ScanEngine, ViewDevice} from '../engine';
+import {localFlagId, matchDevice, setLocalNote, toggleLocalFlag, useFlagsSnapshot} from '../flags';
+import type {MatchedFlag} from '../flags';
 import {describeRelative, Fix, formatFix} from '../geo';
 import {formatBytes} from '../huntlog';
 import {STALE_MS} from '../location';
@@ -32,6 +34,7 @@ function useNow(ms: number): number {
 export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
   const theme = useTheme();
   const styles = makeStyles(theme);
+  const flags = useFlagsSnapshot();
   const [filter, setFilter] = useState<Settings['scanFilter']>(settingsStore.get().scanFilter);
   const [pinned, setPinned] = useState<string[]>(settingsStore.get().pinnedMacs);
   useEffect(
@@ -97,11 +100,20 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
   const st = engine.stats;
   const here = engine.fix && Date.now() - engine.fix.t < STALE_MS ? engine.fix : null;
   const policeCount = engine.view.filter(d => d.police).length;
+  // Flag records (flags.ts) are matched at render time: the record set is
+  // small, and both the filter and the rows need the result.
+  const matched = new Map(engine.view.map(d => [d.mac, matchDevice(flags, d.cls, d.mac)]));
+  const isFlagged = (mac: string) => (matched.get(mac) ?? []).some(m => m.record.flag);
+  const flaggedCount = engine.view.filter(d => isFlagged(d.mac)).length;
   // Police matches float to the top (likely before possible), each group
   // still most-recent-first as the engine sorted it.
   const rank = (d: ViewDevice) => (!d.police ? 2 : d.police.confidence === 'likely' ? 0 : 1);
   const shown =
-    filter === 'police' ? engine.view.filter(d => d.police) : [...engine.view].sort((a, b) => rank(a) - rank(b));
+    filter === 'police'
+      ? engine.view.filter(d => d.police)
+      : filter === 'flagged'
+      ? engine.view.filter(d => isFlagged(d.mac))
+      : [...engine.view].sort((a, b) => rank(a) - rank(b));
   // Pinned devices sit on top in pin order, in either filter, even when
   // they have not been heard yet this session.
   const pinnedSet = new Set(pinned);
@@ -110,10 +122,15 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
     ...pinned.map(mac => ({key: mac, pinned: true, device: byMac.get(mac) ?? null, mac})),
     ...shown.filter(d => !pinnedSet.has(d.mac)).map(d => ({key: d.mac, pinned: false, device: d, mac: d.mac})),
   ];
-  const filters = [
+  const filters: [Settings['scanFilter'], string][] = [
     ['all', `All (${engine.view.length})`],
     ['police', `Police (${policeCount})`],
-  ] as const;
+  ];
+  // The flagged tab only appears once there is something to flag with —
+  // server records pulled, or flags made on this phone.
+  if (flags.server.length + flags.local.length > 0) {
+    filters.push(['flagged', `Flagged (${flaggedCount})`]);
+  }
   return (
     <View style={styles.container}>
       <View style={styles.statsRow}>
@@ -154,7 +171,7 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
         keyExtractor={it => it.key}
         renderItem={({item}) =>
           item.device ? (
-            <DeviceRow item={item.device} here={here} pinned={item.pinned} now={now} />
+            <DeviceRow item={item.device} matched={matched.get(item.mac) ?? []} here={here} pinned={item.pinned} now={now} />
           ) : (
             <MissingPinRow mac={item.mac} />
           )
@@ -169,6 +186,14 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
                 IDs and OUIs; Motorola Solutions; Flock Safety batteries and
                 Raven; other public-safety vendor OUIs and names). Devices that
                 rotate random addresses are only caught by their payload.
+              </Text>
+            </View>
+          ) : filter === 'flagged' ? (
+            <View style={styles.empty}>
+              <Text style={styles.emptyTitle}>Nothing flagged here yet</Text>
+              <Text style={styles.emptyText}>
+                Pull the server set in Settings → Flags, or tap the flag on a
+                device row to make one on this phone.
               </Text>
             </View>
           ) : (
@@ -275,13 +300,30 @@ function MissingPinRow({mac}: {mac: string}): React.JSX.Element {
   );
 }
 
+function FlagButton({mac, cls, active}: {mac: string; cls: ViewDevice['cls']; active: boolean}): React.JSX.Element {
+  const theme = useTheme();
+  const styles = makeStyles(theme);
+  return (
+    <Pressable
+      onPress={() => toggleLocalFlag(mac, cls)}
+      hitSlop={10}
+      style={styles.pinButton}
+      accessibilityRole="button"
+      accessibilityLabel={active ? `Unflag ${mac}` : `Flag ${mac} on this phone`}>
+      <Icon name={active ? 'flag-off' : 'flag'} size={16} color={active ? theme.primary : theme.textMuted} />
+    </Pressable>
+  );
+}
+
 function DeviceRow({
   item,
+  matched,
   here,
   pinned,
   now,
 }: {
   item: ViewDevice;
+  matched: MatchedFlag[];
   here: Fix | null;
   pinned: boolean;
   now: number;
@@ -305,6 +347,11 @@ function DeviceRow({
     .join(' · ');
 
   const police = item.police;
+  const flagged = matched.some(m => m.record.flag);
+  // notes are edited on the row only for the record made on this phone;
+  // server records are managed as a whole in Settings → Flags
+  const localRecord = matched.find(m => m.record.id === localFlagId(item.mac))?.record;
+  const [note, setNote] = useState(localRecord?.note ?? '');
   const age = now - item.lastSeen;
   // fresh: heard within the last few batches; stale: probably gone
   const ageStyle = age < 10_000 ? styles.ageFresh : age < 60_000 ? styles.ageRecent : styles.ageStale;
@@ -315,13 +362,19 @@ function DeviceRow({
         police && styles.cardPolice,
         police?.confidence === 'possible' && styles.cardPolicePossible,
         pinned && styles.cardPinned,
+        flagged && styles.cardFlagged,
       ]}>
-      {pinned || police ? (
+      {pinned || police || flagged ? (
         <View style={styles.tagRow}>
           {pinned ? <Text style={styles.pinTag}>PINNED</Text> : null}
           {police ? (
             <Text style={styles.policeTag}>
               {police.confidence === 'likely' ? 'POLICE · likely' : 'POLICE · possible'} — {police.label}
+            </Text>
+          ) : null}
+          {flagged ? (
+            <Text style={styles.flagTag}>
+              FLAGGED — {matched.filter(m => m.record.flag).map(m => m.hit.kind).join(' · ')}
             </Text>
           ) : null}
         </View>
@@ -331,12 +384,31 @@ function DeviceRow({
           {title}
         </Text>
         <Text style={styles.count}>{item.sightings}×</Text>
+        <FlagButton mac={item.mac} cls={cls} active={!!localRecord?.flag} />
         <PinButton mac={item.mac} pinned={pinned} />
       </View>
       <Text style={[styles.age, pinned && styles.agePinned, ageStyle]}>last heard {formatAgo(age)}</Text>
       <Text style={styles.mono}>{item.mac}</Text>
       {sub ? <Text style={styles.muted}>{sub}</Text> : null}
       {police ? <Text style={styles.muted}>{police.reasons.join(' · ')}</Text> : null}
+      {matched
+        .filter(m => m.record.note && m.record.id !== localFlagId(item.mac))
+        .map(m => (
+          <Text key={m.record.id} style={styles.flagNote}>
+            ⚑ {m.record.note}
+          </Text>
+        ))}
+      {localRecord ? (
+        <TextInput
+          style={styles.noteInput}
+          value={note}
+          onChangeText={setNote}
+          placeholder="note for this flag…"
+          placeholderTextColor={theme.textMuted}
+          onSubmitEditing={() => setLocalNote(item.mac, note, cls)}
+          onEndEditing={() => setLocalNote(item.mac, note, cls)}
+        />
+      ) : null}
       {item.bestFix ? (
         <Text style={styles.where}>
           {here ? `strongest ${describeRelative(here, item.bestFix)}` : `strongest at ${formatFix(item.bestFix)}`}
@@ -390,6 +462,20 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
     cardPolicePossible: {borderColor: theme.border},
     policeTag: {fontSize: 11, fontWeight: '700', color: theme.danger, marginBottom: 4, letterSpacing: 0.3, flexShrink: 1},
     cardPinned: {borderLeftWidth: 4, borderLeftColor: theme.primary},
+    cardFlagged: {borderColor: theme.primary, borderWidth: 1},
+    flagTag: {fontSize: 11, fontWeight: '700', color: theme.primary, marginBottom: 4, letterSpacing: 0.3, flexShrink: 1},
+    flagNote: {fontSize: 12, color: theme.text, marginTop: 4},
+    noteInput: {
+      marginTop: 8,
+      borderRadius: 8,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.border,
+      backgroundColor: theme.surfaceAlt,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      fontSize: 13,
+      color: theme.text,
+    },
     tagRow: {flexDirection: 'row', gap: 8, alignItems: 'center'},
     pinTag: {fontSize: 11, fontWeight: '700', color: theme.primary, marginBottom: 4, letterSpacing: 0.3},
     pinButton: {paddingLeft: 10, paddingVertical: 2},

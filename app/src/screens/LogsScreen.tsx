@@ -1,6 +1,7 @@
 // Logs: the hunt CSV files recorded on this phone (src/huntlog.ts), newest
 // first, with their date and size. Each can be shared (Android share
-// sheet), copied into Downloads, or deleted. Nothing is uploaded.
+// sheet), copied into Downloads, uploaded to the flags server (FLAGS.md,
+// needs a server URL + upload password in Settings → Flags), or deleted.
 import React, {useCallback, useEffect, useState} from 'react';
 import {Alert, FlatList, Pressable, StyleSheet, Text, View} from 'react-native';
 
@@ -12,9 +13,12 @@ import {
   listLogs,
   LogFile,
   onHuntLog,
+  readLog,
   saveLogToDownloads,
   shareLog,
 } from '../huntlog';
+import {uploadHuntFile} from '../flags';
+import {settingsStore} from '../settings';
 import {useTheme} from '../theme';
 
 const REFRESH_MS = 3000;
@@ -24,6 +28,10 @@ export function LogsScreen(): React.JSX.Element {
   const styles = makeStyles(theme);
   const [files, setFiles] = useState<LogFile[] | null>(null);
   const [message, setMessage] = useState<{ok: boolean; text: string} | null>(null);
+  // Upload is only offered when both endpoints are configured: the flags
+  // server URL (it also serves /upload) and the upload password.
+  const [uploadCfg, setUploadCfg] = useState(settingsStore.get());
+  useEffect(() => settingsStore.subscribe(setUploadCfg), []);
 
   const refresh = useCallback(() => {
     listLogs()
@@ -61,6 +69,17 @@ export function LogsScreen(): React.JSX.Element {
       ],
     );
 
+  const canUpload = !!uploadCfg.flagsUrl && !!uploadCfg.uploadPassword;
+  const [uploading, setUploading] = useState<string | null>(null);
+  const upload = (f: LogFile) => {
+    setUploading(f.name);
+    readLog(f.name)
+      .then(body => uploadHuntFile(uploadCfg.flagsUrl, uploadCfg.uploadPassword, f.name, body))
+      .then(() => setMessage({ok: true, text: `Uploaded ${f.name} to the flags server.`}))
+      .catch(e => setMessage({ok: false, text: String(e?.message ?? e)}))
+      .finally(() => setUploading(null));
+  };
+
   if (!huntLogAvailable()) {
     return (
       <View style={styles.empty}>
@@ -81,6 +100,12 @@ export function LogsScreen(): React.JSX.Element {
           : `${files.length} log${files.length === 1 ? '' : 's'} · ${formatBytes(total)} on this phone`}
       </Text>
       {message ? <Text style={message.ok ? styles.okText : styles.errorText}>{message.text}</Text> : null}
+      {!canUpload ? (
+        <Text style={styles.muted}>
+          To upload hunt files to a server, set the flags server URL and upload
+          password in Settings → Flags.
+        </Text>
+      ) : null}
       <FlatList
         data={files ?? []}
         keyExtractor={f => f.name}
@@ -105,6 +130,13 @@ export function LogsScreen(): React.JSX.Element {
                 style={styles.button}
                 onPress={() => report(saveLogToDownloads(item.name), where => `Saved to ${where}.`)}>
                 <Text style={styles.buttonText}>Save to Downloads</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.button, !canUpload && styles.buttonDisabled]}
+                onPress={() => upload(item)}
+                disabled={!canUpload || uploading !== null}
+                accessibilityLabel={`Upload ${item.name} to the flags server`}>
+                <Text style={styles.buttonText}>{uploading === item.name ? 'Uploading…' : 'Upload'}</Text>
               </Pressable>
               <Pressable style={[styles.button, styles.dangerButton]} onPress={() => confirmDelete(item)}>
                 <Text style={[styles.buttonText, styles.dangerButtonText]}>Delete</Text>
@@ -165,6 +197,7 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
       paddingVertical: 8,
     },
     buttonText: {fontSize: 13, color: theme.text},
+    buttonDisabled: {opacity: 0.4},
     primaryButton: {backgroundColor: theme.primary, borderColor: theme.primary},
     primaryButtonText: {color: theme.primaryText},
     dangerButton: {backgroundColor: theme.dangerBg, borderColor: theme.danger},

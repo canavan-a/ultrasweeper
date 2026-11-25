@@ -1,0 +1,30 @@
+{
+  "flags": [
+    {
+      "id": "f-examples-0001",
+      "flag": true,
+      "note": "Fast Pair device at the desk — unauthenticated write characteristic",
+      "matchers": [
+        { "kind": "service", "value": "FE2C" },
+        { "kind": "company", "value": "00E0" }
+      ]
+    },
+    {
+      "id": "f-examples-0002",
+      "flag": true,
+      "note": "Sonos speaker — FE07 vendor service, possible attack entry",
+      "matchers": [
+        { "kind": "service", "value": "FE07" },
+        { "kind": "company", "value": "05A7" }
+      ]
+    },
+    {
+      "id": "f-examples-0003",
+      "flag": true,
+      "note": "SMART-LOCK Eddystone beacon — installed identity, note the namespace",
+      "matchers": [
+        { "kind": "eddy_uid", "value": "534D4152542D4C4F43" }
+      ]
+    }
+  ]
+}

@@ -26,10 +26,11 @@ export interface Settings {
   // off the scan screen. Historical counts live here too; the M2 app
   // keeps only the live session view.
   keepSeconds: number;
-  // Scan list filter: everything heard, or only devices the police
-  // classifier (src/lookup/police.ts) matched. Kept here so it survives
-  // a trip to Settings and app restarts.
-  scanFilter: 'all' | 'police';
+  // Scan list filter: everything heard, only devices the police
+  // classifier (src/lookup/police.ts) matched, or only devices a flag
+  // record (src/flags.ts) lands on. Kept here so it survives a trip to
+  // Settings and app restarts.
+  scanFilter: 'all' | 'police' | 'flagged';
   // Police alerts (src/alerts.ts): a notification when a police match is
   // first heard, with the three-ping chime and/or a matching vibration.
   policeAlerts: boolean;
@@ -52,6 +53,11 @@ export interface Settings {
   // top with "last heard …", and never pruned from the list. Kept across
   // restarts, so a device of interest is recognized next time too.
   pinnedMacs: string[];
+  // Flags server (FLAGS.md): the /flags URL to pull flag records from, and
+  // the password that keys hunt-file uploads to the same host. Empty =
+  // feature off. Pulling is always manual (a button); nothing is pushed.
+  flagsUrl: string;
+  uploadPassword: string;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -69,6 +75,8 @@ const DEFAULT_SETTINGS: Settings = {
   locationEnabled: true,
   recordHunts: true,
   pinnedMacs: [],
+  flagsUrl: '',
+  uploadPassword: '',
 };
 
 type Listener = (settings: Settings) => void;

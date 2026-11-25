@@ -126,6 +126,11 @@ export interface Classification {
    * Only complete UUIDs: one cut off by the capture is dropped.
    */
   serviceUuids128: string[];
+  /**
+   * Eddystone-UID frame identifiers, uppercase hex 10 bytes of namespace
+   * followed by 6 bytes of instance (20 hex chars). Complete frames only.
+   */
+  eddystoneUids: string[];
   /** true when AdvA is a random address (most phones rotate these) */
   randomAddress: boolean;
 }
@@ -150,6 +155,7 @@ export function classify(mac: string, adHex: string): Classification {
     manufacturerData: [],
     serviceUuids: [],
     serviceUuids128: [],
+    eddystoneUids: [],
     randomAddress: false,
   };
   const add128 = (leHex: string) => {
@@ -200,8 +206,17 @@ export function classify(mac: string, adHex: string): Classification {
             if (model.length === 6 && !pdu.truncated) specific.push(`Google Fast Pair accessory, model 0x${model.toUpperCase()}`);
           }
           if (uuid.toUpperCase() === 'FEAA' && s.data.length >= 6) {
-            const frame = EDDYSTONE_FRAMES[parseInt(s.data.slice(4, 6), 16)];
-            if (frame) specific.push(`Eddystone-${frame} beacon`);
+            const frame = parseInt(s.data.slice(4, 6), 16);
+            const frameName = EDDYSTONE_FRAMES[frame];
+            if (frameName) specific.push(`Eddystone-${frameName} beacon`);
+            if (frame === 0x00 && s.data.length >= 28) {
+              // tx-power byte at [6..8); namespace [8..18), instance
+              // [18..28). Flags match on this 20-hex id (FLAGS.md).
+              const uid = s.data.slice(8, 28).toUpperCase();
+              if (!out.eddystoneUids.includes(uid)) {
+                out.eddystoneUids.push(uid);
+              }
+            }
           }
         }
         break;

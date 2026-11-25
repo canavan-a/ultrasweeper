@@ -100,6 +100,8 @@ describe('classify: decoders and registry', () => {
     expect(c.labels[0]).toBe('Eddystone-UID beacon');
     expect(c.vendor).toBe('Google LLC');
     expect(c.labels).toContain('Google LLC service FEAA');
+    // ns ‖ instance as one 20-hex id (flags.ts matches on this)
+    expect(c.eddystoneUids).toEqual(['11111111111111111111']);
   });
 
   it('reads a Fast Pair model ID only from an untruncated discoverable frame', () => {

@@ -1,7 +1,7 @@
 // Settings: themes, launcher icon, scanner behavior, and the sideload
 // updater — same section layout and controls as super-badger's app.
 import React, {useEffect, useState} from 'react';
-import {Pressable, ScrollView, StyleSheet, Switch, Text, View} from 'react-native';
+import {Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
 
 import {
   compareVersions,
@@ -13,6 +13,17 @@ import {
   runUpdate,
 } from '../appUpdater';
 import {sendTestAlert} from '../alerts';
+import {
+  clearLocalFlags,
+  clearServerFlags,
+  deleteLocalFlag,
+  describeMatchers,
+  pullFlags,
+  setLocalFlagById,
+  setLocalNoteById,
+  useFlagsSnapshot,
+} from '../flags';
+import type {FlagRecord} from '../flags';
 import {requestNotificationPermission} from '../notifications';
 import {settingsStore, Settings} from '../settings';
 import {THEME_OPTIONS, ThemeName, useTheme} from '../theme';
@@ -65,6 +76,8 @@ export function SettingsScreen(): React.JSX.Element {
       <AlertsSection settings={settings} update={update} />
 
       <HuntSection settings={settings} update={update} />
+
+      <FlagsSection settings={settings} update={update} />
 
       <Section title="Scanning">
         <Text style={styles.label}>Serial baud rate</Text>
@@ -223,6 +236,149 @@ function HuntSection({
   );
 }
 
+function FlagsSection({
+  settings,
+  update,
+}: {
+  settings: Settings;
+  update: (patch: Partial<Settings>) => void;
+}): React.JSX.Element {
+  const theme = useTheme();
+  const styles = makeStyles(theme);
+  const flags = useFlagsSnapshot();
+  const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const pull = () => {
+    setStatus(null);
+    setBusy(true);
+    pullFlags(settings.flagsUrl)
+      .then(r => setStatus(`pulled ${r.count} flag record${r.count === 1 ? '' : 's'} (revision ${r.revision})`))
+      .catch(e => setStatus(`pull failed: ${String((e as Error)?.message ?? e)}`))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <Section title="Flags">
+      <Text style={styles.help}>
+        Flag records (FLAGS.md) mark devices worth a closer look. They match on
+        what a device advertises — its Eddystone UID, name, MAC, company or
+        service IDs — not just its address, so a flag survives the address
+        rotation real devices do.
+      </Text>
+      <Text style={styles.label}>Flags server URL</Text>
+      <Text style={styles.help}>
+        The /flags endpoint to pull from, e.g. http://192.168.1.10:8787/flags —
+        it also serves the hunt-file uploads below. Leave empty to keep this
+        feature off.
+      </Text>
+      <TextInput
+        style={styles.input}
+        value={settings.flagsUrl}
+        onChangeText={v => update({flagsUrl: v.trim()})}
+        placeholder="http://…/flags"
+        placeholderTextColor={theme.textMuted}
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType="url"
+      />
+      <Text style={styles.label}>Upload password</Text>
+      <Text style={styles.help}>
+        The key the server expects on uploads (X-Upload-Key). Used by the
+        Upload button on the Logs screen; pulling needs no password.
+      </Text>
+      <TextInput
+        style={styles.input}
+        value={settings.uploadPassword}
+        onChangeText={v => update({uploadPassword: v})}
+        placeholder="upload key"
+        placeholderTextColor={theme.textMuted}
+        autoCapitalize="none"
+        autoCorrect={false}
+        secureTextEntry
+      />
+      <View style={styles.optionRow}>
+        <Pressable
+          style={[styles.button, styles.primaryButton, (!settings.flagsUrl || busy) && styles.buttonDisabled]}
+          onPress={pull}
+          disabled={!settings.flagsUrl || busy}>
+          <Text style={[styles.buttonText, styles.primaryButtonText]}>{busy ? 'Pulling…' : 'Pull flags'}</Text>
+        </Pressable>
+        <Text style={styles.help}>
+          {flags.pulledAt
+            ? `${flags.server.length} from server (rev ${flags.revision}) · pulled ${new Date(flags.pulledAt).toLocaleString()}`
+            : 'server set never pulled'}
+          {' · '}
+          {flags.local.length} made on this phone
+        </Text>
+      </View>
+      <Text style={styles.help}>
+        A pull replaces the local copy of the server set wholesale; flags you
+        made on this phone are never touched by it.
+      </Text>
+      {status ? <Text style={styles.errorText}>{status}</Text> : null}
+      {[...flags.local, ...flags.server].map(rec => (
+        <FlagRow key={`${rec.id}`} rec={rec} />
+      ))}
+      {flags.local.length + flags.server.length === 0 ? (
+        <Text style={styles.help}>No flag records held. Flag a device from its row on the scan screen.</Text>
+      ) : null}
+      <View style={styles.optionRow}>
+        {flags.local.length > 0 ? (
+          <Pressable style={styles.button} onPress={() => clearLocalFlags()}>
+            <Text style={styles.buttonText}>Clear my flags</Text>
+          </Pressable>
+        ) : null}
+        {flags.server.length > 0 ? (
+          <Pressable style={styles.button} onPress={() => clearServerFlags()}>
+            <Text style={styles.buttonText}>Clear server copy</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    </Section>
+  );
+}
+
+function FlagRow({rec}: {rec: FlagRecord}): React.JSX.Element {
+  const theme = useTheme();
+  const styles = makeStyles(theme);
+  const [note, setNote] = useState(rec.note);
+  const isLocal = rec.id.startsWith('local-');
+  return (
+    <View style={styles.flagRow}>
+      <View style={styles.flagHead}>
+        <Text style={styles.flagId}>{isLocal ? 'on this phone' : 'from server'}</Text>
+        <Pressable
+          style={[styles.choice, rec.flag && styles.choiceActive]}
+          onPress={() => isLocal && setLocalFlagById(rec.id, !rec.flag)}>
+          <Text style={[styles.choiceText, rec.flag && styles.choiceTextActive]}>
+            {rec.flag ? 'flagged' : 'off'}
+          </Text>
+        </Pressable>
+        {isLocal ? (
+          <Pressable style={styles.choice} onPress={() => deleteLocalFlag(rec.id)}>
+            <Text style={styles.choiceText}>delete</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      <Text style={styles.mono}>{describeMatchers(rec)}</Text>
+      {isLocal ? (
+        <TextInput
+          style={styles.input}
+          value={note}
+          onChangeText={setNote}
+          placeholder="note…"
+          placeholderTextColor={theme.textMuted}
+          onSubmitEditing={() => setLocalNoteById(rec.id, note)}
+          onEndEditing={() => setLocalNoteById(rec.id, note)}
+        />
+      ) : rec.note ? (
+        <Text style={styles.flagNote}>{rec.note}</Text>
+      ) : null}
+    </View>
+  );
+}
+
 function UpdaterSection(): React.JSX.Element {
   const theme = useTheme();
   const styles = makeStyles(theme);
@@ -375,6 +531,26 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
     label: {fontSize: 14, color: theme.text, fontWeight: '600'},
     help: {fontSize: 12, color: theme.textMuted},
     errorText: {fontSize: 12, color: theme.danger},
+    input: {
+      borderRadius: 8,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.border,
+      backgroundColor: theme.bg,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      fontSize: 13,
+      color: theme.text,
+    },
+    mono: {fontSize: 12, color: theme.codeText, fontFamily: 'monospace'},
+    flagRow: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: theme.border,
+      paddingTop: 10,
+      gap: 4,
+    },
+    flagHead: {flexDirection: 'row', alignItems: 'center', gap: 8},
+    flagId: {fontSize: 11, fontWeight: '700', color: theme.textMuted, flex: 1},
+    flagNote: {fontSize: 12, color: theme.text},
     optionRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 6},
     choice: {
       borderRadius: 8,
@@ -399,6 +575,7 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
       alignSelf: 'flex-start',
     },
     buttonText: {fontSize: 13, color: theme.text},
+    buttonDisabled: {opacity: 0.4},
     primaryButton: {backgroundColor: theme.primary, borderColor: theme.primary},
     primaryButtonText: {color: theme.primaryText},
     releaseRow: {
