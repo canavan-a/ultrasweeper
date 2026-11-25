@@ -82,13 +82,12 @@ const DEFAULT_SETTINGS: Settings = {
 type Listener = (settings: Settings) => void;
 
 let current: Settings = DEFAULT_SETTINGS;
-let loaded = false;
+// one shared read: concurrent load() callers await the same getItem, so a
+// slow first read can't land after a save and clobber it
+let loading: Promise<void> | null = null;
 const listeners = new Set<Listener>();
 
-async function load(): Promise<Settings> {
-  if (loaded) {
-    return current;
-  }
+async function readStored(): Promise<void> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
     if (raw) {
@@ -97,7 +96,13 @@ async function load(): Promise<Settings> {
   } catch {
     // fall back to defaults — a corrupt/missing value shouldn't crash startup
   }
-  loaded = true;
+}
+
+async function load(): Promise<Settings> {
+  if (!loading) {
+    loading = readStored();
+  }
+  await loading;
   return current;
 }
 

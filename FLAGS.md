@@ -9,8 +9,12 @@ semantics.
 modernc.org/sqlite (no CGO), schema via goose migrations.
 
 ```
-flagsrv -db flags.db -uploads ./uploads -upload-key <password> [-seed seed.json]
+flagsrv -db flags.db -uploads ./uploads -upload-key <password> [-seed seed.json] [-base-path /<long-random>]
 ```
+
+`-base-path` mounts every route below under that prefix (anything else is
+404), so `<base>` = `http://host:port/<long-random>` and the phone's flags
+URL is `<base>/flags`. Without it `<base>` is the bare host.
 
 ## Core idea: a flag is a matcher set, not a MAC
 
@@ -32,7 +36,7 @@ GET <base>/flags
           { "kind": "name",      "value": "Govee_H6099_5194" },
           { "kind": "company",   "value": "05A7" },
           { "kind": "service",   "value": "FD50" },
-          { "kind": "eddy_uid",  "value": "534D4152542D4C4F43" },
+          { "kind": "eddy_uid",  "value": "534D4152542D4C4F434B" },
           { "kind": "oui",       "value": "54:92:6A" }
         ],
         "updated_at": "2026-11-24T18:00:00Z" }
@@ -46,13 +50,32 @@ Matching (client side, `app/src/flags.ts`, same confidence ladder as
    Exact, stable for installed beacons. Strongest.
 2. `name` — exact (case-insensitive) match on the advertised local name.
 3. `mac` — matches the device **or any of its folded glitch twins**
-   (≤2-bit hamming, the `devices.ts` rule).
-4. `company` / `service` / `oui` — weak matchers. A record with ONLY weak
-   matchers applies when **all** of them hit (family-level notes, e.g.
-   "every Tuya FD50 device"), never any-single-hit.
+   (≤2-bit hamming, the `devices.ts` rule) — only while the app's "merge
+   glitches" setting is on; with it off, exact MAC only, matching how the
+   list shows the devices.
+4. `company` / `service` / `oui` — weak matchers. They count **only in a
+   record with no strong matchers**, and then only when **all** of them hit
+   (family-level notes, e.g. "every Tuya FD50 device"), never
+   any-single-hit. In a record that has any strong matcher they are
+   descriptive only and never land it — flagging one iPhone (mac + company
+   004C) must not flag every Apple device in range.
 
-A strong hit alone lands the record. A device can hold several records
+Any strong hit alone lands the record. A device can hold several records
 (notes shown per record; the flagged state is OR).
+
+Matcher value formats (the server rejects anything else with 400, since
+the client could never match it; `0x` prefixes and `:`/`-` separators are
+ignored in hex values):
+
+| kind       | value                                                     |
+|------------|-----------------------------------------------------------|
+| `mac`      | `AA:BB:CC:DD:EE:FF` (any case)                            |
+| `name`     | 1..64 chars, compared case-insensitively                  |
+| `company`  | 16-bit SIG company id, 1..4 hex (`004C`)                  |
+| `service`  | 16-bit UUID, 4 hex (`FE2C`), or 128-bit UUID, 32 hex       |
+|            | (`0000FE2C-0000-1000-8000-00805F9B34FB`, dashes optional)  |
+| `eddy_uid` | 10 or 20 hex                                              |
+| `oui`      | 6 hex (`54:92:6A`)                                        |
 
 ## Sync semantics
 
@@ -64,7 +87,10 @@ hunt start, no timer.
   server is authoritative for `id`s it owns, until the next pull.
 - **Local records are separate.** Flags created on the device
   (`local-<MAC>` ids, matchers auto-filled from the current
-  classification) are never clobbered by a pull. They persist across
+  classification) are never clobbered by a pull. The `local-` id prefix
+  is reserved for them: the server refuses to store a record whose id
+  starts with `local-` (400). The app tells the two sets apart by which
+  set a record was held in, never by id. They persist across
   restarts and hunts — per device, globally — and re-apply whenever that
   device shows up again.
 - Settings → Flags lists every held record: local ones can be renamed
@@ -84,7 +110,9 @@ into its uploads directory — no parsing, no dedup.
 POST <base>/upload
 X-Upload-Key: <password>        → 401 if missing/wrong; 403 if the server
                                    started without -upload-key
-X-File-Name: hunt_2026-11-24…   → sanitized to [A-Za-z0-9._-], else '_'
+X-File-Name: hunt_2026-11-24…   → percent-encoded UTF-8 (encodeURIComponent);
+                                   decoded, base name taken, then
+                                   sanitized to [A-Za-z0-9._-], else '_'
 body: raw file bytes            → capped at 64 MiB
 
 → { "ok": true, "path": "20261124-180102-hunt_2026-11-24_09-47-58.csv",
@@ -93,8 +121,8 @@ body: raw file bytes            → capped at 64 MiB
 
 Stored names are prefixed with a UTC timestamp (`O_EXCL`) so uploads
 never overwrite each other. `GET <base>/flags` stays unauthenticated in
-v0 — the URL itself (long random path) is the access control; uploads
-are separately keyed because they write.
+v0 — the URL itself (long random path, flagsrv `-base-path`) is the
+access control; uploads are separately keyed because they write.
 
 ## Server schema (goose)
 
@@ -122,7 +150,7 @@ endpoints above, so you can curate the set from any LAN client (curl, a
 future web page) without touching sqlite. Every write bumps
 `meta.revision`, which the phone shows next to "last pull". Writes
 validate the FLAGS.md shape (1..16 matchers, kinds restricted to the six
-above, note ≤1000 chars) before touching the db; `POST` to an existing
+above, per-kind value formats, no `local-` ids, note ≤1000 chars) before touching the db; `POST` to an existing
 id is 409, unknown ids are 404.
 
 This is LAN-side management: no auth in v0, same rule as the pull — the
@@ -134,6 +162,9 @@ use the same `POST`/`PUT` endpoints; still phase 2 on the client.)
 
 `app/src/flags.ts` holds the store (AsyncStorage key
 `ultrascanner.flags.v1`), the matchers, and `pullFlags`/`uploadHuntFile`
-(derived: `<base>/upload` from the configured `<base>/flags`).
+(derived: `<base>/upload` from the configured `<base>/flags`; the URL's
+path must end in `/flags`, a query string is carried over, anything else
+is refused rather than guessed). Pull times out after 15 s, upload after
+120 s.
 Settings keys `flagsUrl` + `uploadPassword` gate the feature; empty =
 off.

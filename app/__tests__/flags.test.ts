@@ -4,10 +4,12 @@
 import {
   FlagRecord,
   autoMatchers,
+  effectiveScanFilter,
   matchDevice,
   matchFlag,
   mergeServerRecords,
   parseRecord,
+  pickLocalRecord,
   uploadUrl,
 } from '../src/flags';
 import type {Classification} from '../src/lookup/adparse';
@@ -184,3 +186,240 @@ describe('parseRecord + mergeServerRecords', () => {
     expect(next.local.map(r => r.id)).toEqual(['local-mine']);
   });
 });
+
+// ---- code-review regressions ----------------------------------------------
+
+const MAC_A = 'AA:BB:CC:DD:EE:01';
+const MAC_B = '5A:11:22:33:44:55';
+
+describe('weak matchers next to strong ones never land a record', () => {
+  it('flagging one Apple device does not flag every Apple device', () => {
+    const iphone = cls({companyIds: [0x004c]});
+    const r = rec('local-x', autoMatchers(iphone, MAC_A));
+    expect(r.matchers).toContainEqual({kind: 'company', value: '004C'});
+    expect(matchFlag(r, iphone, MAC_A)).toEqual({kind: 'mac', value: MAC_A});
+    // a different Apple device: same company id, unrelated MAC
+    expect(matchFlag(r, cls({companyIds: [0x004c]}), MAC_B)).toBeNull();
+  });
+
+  it('a FE2C-only device does not flag every Fast Pair device', () => {
+    const r = rec('local-y', autoMatchers(cls({serviceUuids: ['FE2C']}), MAC_A));
+    expect(matchFlag(r, cls({serviceUuids: ['FE2C']}), MAC_B)).toBeNull();
+  });
+
+  it('weak-only records still match on the full set', () => {
+    const r = rec('srv', [{kind: 'company', value: '004C'}]);
+    expect(matchFlag(r, cls({companyIds: [0x004c]}), MAC_B)).toEqual({kind: 'company', value: '004C'});
+  });
+});
+
+describe('mac glitch tolerance follows mergeGlitches', () => {
+  it('exact MAC only when glitch merging is off', () => {
+    const r = rec('a', [{kind: 'mac', value: MAC_A}]);
+    expect(matchFlag(r, cls(), 'AA:BB:CC:DD:EC:01', {glitchTolerant: true})).not.toBeNull();
+    expect(matchFlag(r, cls(), 'AA:BB:CC:DD:EC:01', {glitchTolerant: false})).toBeNull();
+    expect(matchFlag(r, cls(), MAC_A, {glitchTolerant: false})).not.toBeNull();
+  });
+});
+
+describe('128-bit service matchers', () => {
+  const uuid = '6E400001-B5A3-F393-E0A9-E50E24DCCA9E';
+  it('match serviceUuids128, with or without dashes', () => {
+    const c = cls({serviceUuids128: [uuid]});
+    expect(matchFlag(rec('a', [{kind: 'service', value: uuid}]), c, MAC_B)).not.toBeNull();
+    expect(matchFlag(rec('a', [{kind: 'service', value: uuid.replace(/-/g, '').toLowerCase()}]), c, MAC_B)).not.toBeNull();
+    expect(matchFlag(rec('a', [{kind: 'service', value: uuid}]), cls(), MAC_B)).toBeNull();
+  });
+  it('autoMatchers records them', () => {
+    expect(autoMatchers(cls({serviceUuids128: [uuid]}), MAC_A)).toContainEqual({kind: 'service', value: uuid});
+  });
+});
+
+describe('ownership is by held set, not id prefix', () => {
+  it('matchDevice tags the source; pickLocalRecord ignores server local-… ids', () => {
+    const spoof = rec(localFlagIdOf(MAC_A), [{kind: 'mac', value: MAC_A}]);
+    const snap = {revision: 1, pulledAt: 0, server: [spoof], local: []};
+    const hits = matchDevice(snap, cls(), MAC_A);
+    expect(hits.map(h => h.source)).toEqual(['server']);
+    expect(pickLocalRecord(hits, MAC_A)).toBeUndefined();
+  });
+  it('pickLocalRecord prefers the exact-MAC record, else any local hit', () => {
+    const exact = rec(localFlagIdOf(MAC_B), [{kind: 'mac', value: MAC_B}]);
+    const older = rec(localFlagIdOf(MAC_A), [{kind: 'mac', value: MAC_A}, {kind: 'name', value: 'Tile'}]);
+    const c = cls({name: 'Tile'});
+    expect(pickLocalRecord(matchDevice({revision: 0, pulledAt: null, server: [], local: [older, exact]}, c, MAC_B), MAC_B)).toBe(exact);
+    expect(pickLocalRecord(matchDevice({revision: 0, pulledAt: null, server: [], local: [older]}, c, MAC_B), MAC_B)).toBe(older);
+  });
+});
+
+describe('effectiveScanFilter', () => {
+  const empty = {revision: 0, pulledAt: null, server: [], local: []};
+  it('falls back to all when the Flagged tab is not offered', () => {
+    expect(effectiveScanFilter('flagged', empty)).toBe('all');
+    expect(effectiveScanFilter('police', empty)).toBe('police');
+    const held = {...empty, local: [rec('l', [{kind: 'mac', value: MAC_A}])]};
+    expect(effectiveScanFilter('flagged', held)).toBe('flagged');
+  });
+});
+
+describe('uploadUrl derivation', () => {
+  it('keeps a secret path prefix and the query string', () => {
+    expect(uploadUrl('http://10.0.0.2:8788/k3x9q/flags')).toBe('http://10.0.0.2:8788/k3x9q/upload');
+    expect(uploadUrl('https://host/flags?t=1')).toBe('https://host/upload?t=1');
+    expect(uploadUrl('https://host/a/flags/#x')).toBe('https://host/a/upload');
+  });
+  it('refuses URLs that do not end in /flags instead of posting to them', () => {
+    expect(() => uploadUrl('https://host/api')).toThrow(/must look like/);
+    expect(() => uploadUrl('https://host/flagsx')).toThrow(/must look like/);
+    expect(() => uploadUrl('host/flags')).toThrow(/must look like/);
+  });
+});
+
+describe('store regressions', () => {
+  let mod: typeof import('../src/flags');
+  let storage: typeof import('@react-native-async-storage/async-storage').default;
+  const KEY = 'ultrascanner.flags.v1';
+  beforeEach(async () => {
+    jest.isolateModules(() => {
+      mod = require('../src/flags');
+      storage = asyncStorageOf(require('@react-native-async-storage/async-storage'));
+    });
+    await storage.clear(); // the mock's backing map outlives module isolation
+  });
+
+  it('a toggle racing the first load is not overwritten by the stale read', async () => {
+    const stored = {revision: 2, pulledAt: 1, server: [], local: [{id: 'local-OLD', flag: true, note: 'kept', matchers: [{kind: 'mac', value: MAC_B}]}]};
+    await storage.setItem(KEY, JSON.stringify(stored));
+    const real = storage.getItem;
+    let release!: () => void;
+    const gate = new Promise<void>(r => (release = r));
+    let calls = 0;
+    storage.getItem = async (k: string) => {
+      calls++;
+      if (calls === 1) {
+        await gate; // the mount-time load is slow
+      }
+      return real(k);
+    };
+    const mounting = mod.flagsStore.load();
+    const toggling = mod.toggleLocalFlag(MAC_A, cls());
+    release();
+    await Promise.all([mounting, toggling]);
+    expect(calls).toBe(1);
+    const ids = mod.flagsStore.get().local.map(r => r.id);
+    expect(ids).toEqual(['local-OLD', mod.localFlagId(MAC_A)]);
+    const disk = JSON.parse((await real(KEY)) as string);
+    expect(disk.local.map((r: FlagRecord) => r.id)).toEqual(ids);
+  });
+
+  it('stored records are validated: malformed ones are dropped, not crashed on', async () => {
+    const good = {id: 'local-OK', flag: true, note: '', matchers: [{kind: 'mac', value: MAC_A}], updatedAt: '2026-11-01T00:00:00Z'};
+    await storage.setItem(KEY, JSON.stringify({revision: 1, pulledAt: 1, server: [{id: 'future', flag: true, note: ''}], local: [good, 7]}));
+    const snap = await mod.flagsStore.load();
+    expect(snap.server).toEqual([]);
+    expect(snap.local).toEqual([good]);
+    expect(() => mod.matchDevice(snap, cls(), MAC_A)).not.toThrow();
+  });
+
+  it('row toggle after an address rotation flips the original record, no duplicate', async () => {
+    const c = cls({name: 'Tile Mate'});
+    await mod.toggleLocalFlag(MAC_A, c);
+    await mod.setLocalNote(MAC_A, 'on the car', c);
+    // same device, new random address, still matched by name
+    await mod.toggleLocalFlag(MAC_B, c);
+    let local = mod.flagsStore.get().local;
+    expect(local).toHaveLength(1);
+    expect(local[0]).toMatchObject({id: mod.localFlagId(MAC_A), flag: false, note: 'on the car'});
+    await mod.setLocalNote(MAC_B, 'moved to the bike', c);
+    local = mod.flagsStore.get().local;
+    expect(local).toHaveLength(1);
+    expect(local[0].note).toBe('moved to the bike');
+  });
+
+  it('setLocalNote stamps updatedAt on a new record', async () => {
+    await mod.setLocalNote(MAC_A, 'fresh', cls());
+    expect(mod.flagsStore.get().local[0].updatedAt).toEqual(expect.any(String));
+  });
+
+  it('an unchanged note is not written again (submit + end-editing)', async () => {
+    await mod.toggleLocalFlag(MAC_A, cls());
+    const id = mod.localFlagId(MAC_A);
+    await mod.setLocalNoteById(id, 'once');
+    const before = mod.flagsStore.get();
+    const real = storage.setItem;
+    let writes = 0;
+    storage.setItem = async (k: string, v: string) => {
+      writes++;
+      return real(k, v);
+    };
+    await mod.setLocalNoteById(id, 'once');
+    expect(writes).toBe(0);
+    expect(mod.flagsStore.get()).toBe(before);
+  });
+
+  it('pull reports a JSON null / non-object body as "no flags array"', async () => {
+    for (const body of [null, 3, 'x', []]) {
+      global.fetch = jest.fn().mockResolvedValue({ok: true, json: async () => body}) as never;
+      await expect(mod.pullFlags('https://host/flags')).rejects.toThrow('flags server: response has no flags array');
+    }
+    global.fetch = jest.fn().mockResolvedValue({ok: true, json: async () => JSON.parse('{')}) as never;
+    await expect(mod.pullFlags('https://host/flags')).rejects.toThrow('flags server: response is not JSON');
+  });
+
+  it('pull and upload time out instead of hanging, and abort the request', async () => {
+    const signals: AbortSignal[] = [];
+    global.fetch = jest.fn((_url: string, init: RequestInit) => {
+      signals.push(init.signal as AbortSignal);
+      return new Promise(() => {}); // unreachable LAN host: never settles
+    }) as never;
+    await expect(mod.pullFlags('https://host/flags', 20)).rejects.toThrow(/flags server: no response after/);
+    await expect(mod.uploadHuntFile('https://host/flags', 'pw', 'hunt.csv', 'x', 20)).rejects.toThrow(
+      /upload server: no response after/,
+    );
+    expect(signals.map(s => s.aborted)).toEqual([true, true]);
+  });
+
+  it('upload posts to the prefixed /upload with a percent-encoded file name', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({ok: true});
+    global.fetch = fetchMock as never;
+    await mod.uploadHuntFile('http://h/k3x9q/flags', 'pw', 'hunt 1.csv', 'x');
+    expect(fetchMock.mock.calls[0][0]).toBe('http://h/k3x9q/upload');
+    expect(fetchMock.mock.calls[0][1].headers['X-File-Name']).toBe('hunt%201.csv');
+  });
+});
+
+describe('settings store load race', () => {
+  it('a save racing the first load survives it', async () => {
+    let settings!: typeof import('../src/settings');
+    let storage!: typeof import('@react-native-async-storage/async-storage').default;
+    jest.isolateModules(() => {
+      settings = require('../src/settings');
+      storage = asyncStorageOf(require('@react-native-async-storage/async-storage'));
+    });
+    await storage.setItem('ultrascanner.settings.v1', JSON.stringify({flagsUrl: 'http://old/flags'}));
+    const real = storage.getItem;
+    let release!: () => void;
+    const gate = new Promise<void>(r => (release = r));
+    let calls = 0;
+    storage.getItem = async (k: string) => {
+      calls++;
+      await gate;
+      return real(k);
+    };
+    const first = settings.settingsStore.load();
+    const second = settings.settingsStore.load().then(s => settings.settingsStore.save({...s, flagsUrl: 'http://new/flags'}));
+    release();
+    await Promise.all([first, second]);
+    expect(calls).toBe(1);
+    expect(settings.settingsStore.get().flagsUrl).toBe('http://new/flags');
+  });
+});
+
+function localFlagIdOf(mac: string): string {
+  return `local-${mac.replace(/:/g, '')}`;
+}
+
+/** the jest mock is CommonJS (no .default); the real module is ESM */
+function asyncStorageOf(m: any) {
+  return m.default ?? m;
+}

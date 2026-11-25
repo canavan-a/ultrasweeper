@@ -31,7 +31,17 @@ export function LogsScreen(): React.JSX.Element {
   // Upload is only offered when both endpoints are configured: the flags
   // server URL (it also serves /upload) and the upload password.
   const [uploadCfg, setUploadCfg] = useState(settingsStore.get());
-  useEffect(() => settingsStore.subscribe(setUploadCfg), []);
+  useEffect(() => {
+    // mounted before settings finished loading? pick up the stored values
+    // once they're in, not only on the next save
+    let on = true;
+    settingsStore.load().then(s => on && setUploadCfg(s));
+    const off = settingsStore.subscribe(setUploadCfg);
+    return () => {
+      on = false;
+      off();
+    };
+  }, []);
 
   const refresh = useCallback(() => {
     listLogs()

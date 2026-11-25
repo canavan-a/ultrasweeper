@@ -2,7 +2,10 @@
 // uploaded hunt files. SQLite via modernc.org/sqlite (no CGO), schema
 // via goose migrations.
 //
-//	flagsrv -db flags.db -uploads ./uploads -upload-key <password>
+//	flagsrv -db flags.db -uploads ./uploads -upload-key <password> [-base-path /<long-random>]
+//
+// Every route below is served under -base-path (default: the root), so the
+// phone's flags URL is http://host[:port][<base-path>]/flags.
 //
 // GET    /flags        → the flag JSON the phone pulls (see FLAGS.md)
 // POST   /flags        → add a record (id optional; f-… generated)
@@ -25,6 +28,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -53,8 +57,14 @@ func main() {
 		uploads   = flag.String("uploads", "uploads", "directory for uploaded hunt files")
 		uploadKey = flag.String("upload-key", os.Getenv("FLAGSRV_UPLOAD_KEY"), "X-Upload-Key value for POST /upload (empty disables uploads)")
 		seed      = flag.String("seed", "", "optional JSON file of flag records to upsert at startup")
+		basePath  = flag.String("base-path", os.Getenv("FLAGSRV_BASE_PATH"), "serve every route under this path prefix, e.g. /k3x9…; the URL is then the access control (FLAGS.md)")
 	)
 	flag.Parse()
+
+	prefix, err := normBasePath(*basePath)
+	if err != nil {
+		log.Fatalf("base-path: %v", err)
+	}
 
 	db, err := openDB(*dbPath)
 	if err != nil {
@@ -71,8 +81,8 @@ func main() {
 
 	s := &server{db: db, uploadsDir: *uploads, uploadKey: *uploadKey}
 
-	log.Printf("flagsrv on %s (db=%s uploads=%s uploads_keyed=%v)", *addr, *dbPath, *uploads, *uploadKey != "")
-	if err := http.ListenAndServe(*addr, s.routes()); err != nil {
+	log.Printf("flagsrv on %s (db=%s uploads=%s uploads_keyed=%v base_path_set=%v)", *addr, *dbPath, *uploads, *uploadKey != "", prefix != "")
+	if err := http.ListenAndServe(*addr, withBasePath(prefix, s.routes())); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -90,6 +100,33 @@ func (s *server) routes() http.Handler {
 		io.WriteString(w, "ok")
 	})
 	return mux
+}
+
+// normBasePath turns "-base-path" into "" (root) or "/a/b" (leading slash,
+// no trailing slash).
+func normBasePath(p string) (string, error) {
+	p = strings.Trim(strings.TrimSpace(p), "/")
+	if p == "" {
+		return "", nil
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "" || seg == "." || seg == ".." || !validIDChars(seg) {
+			return "", fmt.Errorf("segments must match [A-Za-z0-9._-]{1,64}")
+		}
+	}
+	return "/" + p, nil
+}
+
+// withBasePath mounts h under prefix; anything outside it is a plain 404,
+// so the prefix works as the long-random-path access control FLAGS.md
+// describes. prefix "" serves h at the root.
+func withBasePath(prefix string, h http.Handler) http.Handler {
+	if prefix == "" {
+		return h
+	}
+	outer := http.NewServeMux()
+	outer.Handle(prefix+"/", http.StripPrefix(prefix, h))
+	return outer
 }
 
 // ---- GET /flags -------------------------------------------------------------
@@ -131,6 +168,79 @@ var matcherKinds = map[string]bool{
 	"service": true, "eddy_uid": true, "oui": true,
 }
 
+// localIDPrefix is reserved for records the phone creates itself
+// (FLAGS.md): a server record with such an id would look like an
+// on-phone one, so writes reject it.
+const localIDPrefix = "local-"
+
+// bareHex strips an optional 0x prefix and ':' / '-' / ' ' separators and
+// reports whether what is left is all hex — the normalization the client
+// applies before matching (app/src/flags.ts).
+func bareHex(v string) (string, bool) {
+	v = strings.TrimSpace(v)
+	if len(v) > 2 && (v[:2] == "0x" || v[:2] == "0X") {
+		v = v[2:]
+	}
+	v = strings.NewReplacer(":", "", "-", "", " ", "").Replace(v)
+	if v == "" {
+		return "", false
+	}
+	for _, c := range v {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return "", false
+		}
+	}
+	return v, true
+}
+
+func isMAC(v string) bool {
+	parts := strings.Split(v, ":")
+	if len(parts) != 6 {
+		return false
+	}
+	for _, p := range parts {
+		if h, ok := bareHex(p); !ok || len(h) != 2 {
+			return false
+		}
+	}
+	return true
+}
+
+// validMatcherValue enforces the per-kind value formats FLAGS.md lists —
+// exactly what the client can ever match, so a record that could never
+// land on a device is refused instead of stored.
+func validMatcherValue(kind, v string) error {
+	if v == "" || len(v) > 64 {
+		return fmt.Errorf("bad matcher value for kind %q: 1..64 chars", kind)
+	}
+	h, isHex := bareHex(v)
+	switch kind {
+	case "name":
+		return nil
+	case "mac":
+		if !isMAC(v) {
+			return fmt.Errorf("bad mac %q: want AA:BB:CC:DD:EE:FF", v)
+		}
+	case "oui":
+		if !isHex || len(h) != 6 {
+			return fmt.Errorf("bad oui %q: want 6 hex digits, e.g. 54:92:6A", v)
+		}
+	case "company":
+		if !isHex || len(h) > 4 {
+			return fmt.Errorf("bad company %q: want a 16-bit hex id, e.g. 004C", v)
+		}
+	case "service":
+		if !isHex || (len(h) != 4 && len(h) != 32) {
+			return fmt.Errorf("bad service %q: want 16-bit (FE2C) or 128-bit UUID hex", v)
+		}
+	case "eddy_uid":
+		if !isHex || (len(h) != 10 && len(h) != 20) {
+			return fmt.Errorf("bad eddy_uid %q: want 10 or 20 hex digits", v)
+		}
+	}
+	return nil
+}
+
 // validateRecord enforces the FLAGS.md shape before anything reaches the db
 // (the schema CHECK is the backstop, not the gate).
 func validateRecord(f *flagJSON, requireID bool) error {
@@ -139,6 +249,9 @@ func validateRecord(f *flagJSON, requireID bool) error {
 	}
 	if !requireID && f.ID != "" && !validIDChars(f.ID) {
 		return fmt.Errorf("id must match [A-Za-z0-9._-]{1,64}")
+	}
+	if strings.HasPrefix(strings.ToLower(f.ID), localIDPrefix) {
+		return fmt.Errorf("ids starting with %q are reserved for records made on the phone", localIDPrefix)
 	}
 	if len(f.Note) > 1000 {
 		return fmt.Errorf("note exceeds 1000 chars")
@@ -150,8 +263,8 @@ func validateRecord(f *flagJSON, requireID bool) error {
 		if !matcherKinds[m.Kind] {
 			return fmt.Errorf("bad matcher kind %q", m.Kind)
 		}
-		if m.Value == "" || len(m.Value) > 64 {
-			return fmt.Errorf("bad matcher value for kind %q", m.Kind)
+		if err := validMatcherValue(m.Kind, m.Value); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -477,7 +590,14 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := filepath.Base(r.Header.Get("X-File-Name"))
+	// X-File-Name is percent-encoded UTF-8 (FLAGS.md); decode before
+	// taking the base name so an encoded "../" can't survive. A value
+	// that isn't valid percent-encoding is used as sent.
+	raw := r.Header.Get("X-File-Name")
+	if dec, err := url.PathUnescape(raw); err == nil {
+		raw = dec
+	}
+	name := filepath.Base(raw)
 	name = strings.Map(func(c rune) rune {
 		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '-' || c == '_' {
 			return c

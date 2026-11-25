@@ -41,10 +41,12 @@ const STORAGE_KEY = 'ultrascanner.flags.v1';
 const EMPTY: FlagsSnapshot = {revision: 0, pulledAt: null, server: [], local: []};
 
 // Strong matchers identify one device; weak ones (company/service/oui)
-// identify a class. A record with strong matchers can still carry weak
-// ones as a family-level fallback, but weak-only matchers only fire when
-// ALL of them hit — "every Tuya FD50 device", not "any device with FD50
-// or a Tuya company ID".
+// identify a class. Weak matchers only land a record that has NO strong
+// matchers, and then only when ALL of them hit — "every Tuya FD50
+// device", not "any device with FD50 or a Tuya company ID". In a record
+// with any strong matcher the weak ones are descriptive only: otherwise
+// hand-flagging one iPhone (mac + company 004C) would flag every Apple
+// device in range.
 const STRONG: MatcherKind[] = ['eddy_uid', 'name', 'mac'];
 
 export const MATCHER_KINDS: MatcherKind[] = ['mac', 'name', 'company', 'service', 'eddy_uid', 'oui'];
@@ -58,7 +60,17 @@ function normMac(value: string): string | null {
   return /^[0-9A-F]{2}(:[0-9A-F]{2}){5}$/.test(m) ? m : null;
 }
 
-function matcherHits(m: FlagMatcher, cls: Classification, mac: string): boolean {
+export interface MatchOptions {
+  /**
+   * Let a `mac` matcher accept the ≤2-bit glitch twins devices.ts folds.
+   * Follows Settings → mergeGlitches: when the list deliberately shows
+   * near-identical MACs as distinct devices, a flag must not hop between
+   * them. Default true.
+   */
+  glitchTolerant?: boolean;
+}
+
+function matcherHits(m: FlagMatcher, cls: Classification, mac: string, opts: MatchOptions): boolean {
   switch (m.kind) {
     case 'mac': {
       const want = normMac(m.value);
@@ -67,6 +79,9 @@ function matcherHits(m: FlagMatcher, cls: Classification, mac: string): boolean 
       }
       if (want === mac) {
         return true;
+      }
+      if (opts.glitchTolerant === false) {
+        return false;
       }
       // the matcher MAC itself may be the corrupted one: accept the
       // same ≤2-bit distance devices.ts uses to fold glitch twins
@@ -79,8 +94,15 @@ function matcherHits(m: FlagMatcher, cls: Classification, mac: string): boolean 
       const want = parseInt(normHex(m.value), 16);
       return Number.isFinite(want) && cls.companyIds.includes(want);
     }
-    case 'service':
-      return cls.serviceUuids.includes(normHex(m.value));
+    case 'service': {
+      // 16-bit (4 hex) against the 16-bit list; full 128-bit (32 hex,
+      // dashes optional) against the 128-bit list
+      const want = normHex(m.value);
+      if (want.length === 4) {
+        return cls.serviceUuids.some(u => normHex(u) === want);
+      }
+      return want.length === 32 && cls.serviceUuids128.some(u => normHex(u) === want);
+    }
     case 'eddy_uid': {
       // full 20-hex ns‖instance, or 10-hex namespace-only (flags a whole
       // beacon installation the owner only knows the namespace of)
@@ -104,14 +126,15 @@ export function matchFlag(
   rec: FlagRecord,
   cls: Classification,
   mac: string,
+  opts: MatchOptions = {},
 ): FlagMatcher | null {
-  for (const m of rec.matchers) {
-    if (STRONG.includes(m.kind) && matcherHits(m, cls, mac)) {
-      return m;
-    }
+  const strong = rec.matchers.filter(m => STRONG.includes(m.kind));
+  if (strong.length) {
+    // weak matchers next to strong ones never land the record (FLAGS.md)
+    return strong.find(m => matcherHits(m, cls, mac, opts)) ?? null;
   }
-  const weak = rec.matchers.filter(m => !STRONG.includes(m.kind));
-  if (weak.length && weak.every(m => matcherHits(m, cls, mac))) {
+  const weak = rec.matchers;
+  if (weak.length && weak.every(m => matcherHits(m, cls, mac, opts))) {
     return weak[0];
   }
   return null;
@@ -121,27 +144,64 @@ export function matchFlag(
 export interface MatchedFlag {
   record: FlagRecord;
   hit: FlagMatcher;
+  /**
+   * which held set the record came from. Ownership is by set, never by id
+   * prefix: a server record could carry any id.
+   */
+  source: 'server' | 'local';
 }
 
 export function matchDevice(
   snapshot: FlagsSnapshot,
   cls: Classification,
   mac: string,
+  opts: MatchOptions = {},
 ): MatchedFlag[] {
   const out: MatchedFlag[] = [];
-  for (const record of [...snapshot.server, ...snapshot.local]) {
-    const hit = matchFlag(record, cls, mac);
-    if (hit) {
-      out.push({record, hit});
+  const sets: [FlagRecord[], MatchedFlag['source']][] = [
+    [snapshot.server, 'server'],
+    [snapshot.local, 'local'],
+  ];
+  for (const [records, source] of sets) {
+    for (const record of records) {
+      const hit = matchFlag(record, cls, mac, opts);
+      if (hit) {
+        out.push({record, hit, source});
+      }
     }
   }
   return out;
 }
 
 /**
+ * The on-phone record a scan row edits: the one created for this exact
+ * MAC if it matched, else any other local record that lands on the device
+ * (it rotated its address and still matches by name or Eddystone UID).
+ * Undefined = none; flagging the row then creates one.
+ */
+export function pickLocalRecord(matched: MatchedFlag[], mac: string): FlagRecord | undefined {
+  const local = matched.filter(m => m.source === 'local');
+  const id = localFlagId(mac);
+  return (local.find(m => m.record.id === id) ?? local[0])?.record;
+}
+
+export type ScanFilter = 'all' | 'police' | 'flagged';
+
+/**
+ * The scan filter that actually applies: the Flagged tab is only offered
+ * while flag records are held, so a saved 'flagged' falls back to 'all'
+ * when there are none (otherwise the list is stuck on a hidden tab).
+ */
+export function effectiveScanFilter(filter: ScanFilter, snapshot: FlagsSnapshot): ScanFilter {
+  return filter === 'flagged' && snapshot.server.length + snapshot.local.length === 0 ? 'all' : filter;
+}
+
+/**
  * Matchers auto-filled when the user flags a device by hand: everything
  * the captures corroborate about it, so the flag survives address
- * rotation and bit-garbled MACs.
+ * rotation and bit-garbled MACs. Company/service matchers ride along to
+ * describe the device only — next to the strong ones they never land the
+ * record (see matchFlag).
  */
 export function autoMatchers(cls: Classification, mac: string): FlagMatcher[] {
   const out: FlagMatcher[] = [{kind: 'mac', value: mac}];
@@ -155,6 +215,9 @@ export function autoMatchers(cls: Classification, mac: string): FlagMatcher[] {
     out.push({kind: 'company', value: c.toString(16).toUpperCase().padStart(4, '0')});
   }
   for (const s of cls.serviceUuids) {
+    out.push({kind: 'service', value: s});
+  }
+  for (const s of cls.serviceUuids128) {
     out.push({kind: 'service', value: s});
   }
   return out;
@@ -198,13 +261,10 @@ export function parseRecord(raw: unknown): FlagRecord | null {
   if (matchers.length === 0) {
     return null; // a flag that can't match anything is not a flag
   }
-  return {
-    id: r.id,
-    flag: r.flag,
-    note: r.note,
-    matchers,
-    updatedAt: typeof r.updated_at === 'string' ? r.updated_at : undefined,
-  };
+  // the wire says updated_at; the on-phone cache stores updatedAt
+  const updatedAt =
+    typeof r.updated_at === 'string' ? r.updated_at : typeof r.updatedAt === 'string' ? r.updatedAt : undefined;
+  return {id: r.id, flag: r.flag, note: r.note, matchers, updatedAt};
 }
 
 /** merge a pull into stored records: server set replaces wholesale, local kept */
@@ -215,28 +275,39 @@ export function mergeServerRecords(prev: FlagsSnapshot, pulled: FlagRecord[]): F
 // ---- store (same load/save/subscribe shape as settings.ts) ------------------
 
 let current: FlagsSnapshot = EMPTY;
-let loaded = false;
+// One shared load: concurrent callers (the mount-time useFlagsSnapshot and
+// a row toggle right after launch) await the same read, so a slow getItem
+// can never land after a save and overwrite it with the stale snapshot.
+let loading: Promise<void> | null = null;
 const listeners = new Set<(s: FlagsSnapshot) => void>();
 
-async function load(): Promise<FlagsSnapshot> {
-  if (loaded) {
-    return current;
-  }
+/** stored records go through the same validation as pulled ones */
+function parseStored(list: unknown): FlagRecord[] {
+  return Array.isArray(list) ? (list.map(parseRecord).filter(Boolean) as FlagRecord[]) : [];
+}
+
+async function readStored(): Promise<void> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const p = JSON.parse(raw) as Partial<FlagsSnapshot>;
+      const p = JSON.parse(raw) as Record<string, unknown>;
       current = {
         revision: typeof p.revision === 'number' ? p.revision : 0,
         pulledAt: typeof p.pulledAt === 'number' ? p.pulledAt : null,
-        server: Array.isArray(p.server) ? (p.server.filter(Boolean) as FlagRecord[]) : [],
-        local: Array.isArray(p.local) ? (p.local.filter(Boolean) as FlagRecord[]) : [],
+        server: parseStored(p.server),
+        local: parseStored(p.local),
       };
     }
   } catch {
     // corrupt cache: start clean rather than crash
   }
-  loaded = true;
+}
+
+async function load(): Promise<FlagsSnapshot> {
+  if (!loading) {
+    loading = readStored();
+  }
+  await loading;
   return current;
 }
 
@@ -250,17 +321,53 @@ async function save(next: FlagsSnapshot): Promise<void> {
   }
 }
 
+export const PULL_TIMEOUT_MS = 15_000;
+export const UPLOAD_TIMEOUT_MS = 120_000;
+
+/**
+ * fetch with a hard deadline: React Native's fetch can hang for minutes on
+ * an unreachable LAN address, which would leave "Pulling…" / Upload stuck.
+ */
+async function fetchWithTimeout(
+  what: string,
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const ctl = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      ctl.abort();
+      reject(new Error(`${what}: no response after ${Math.max(1, Math.round(timeoutMs / 1000))} s`));
+    }, timeoutMs);
+  });
+  try {
+    // race too, not just abort: an RN fetch that ignores the signal still
+    // releases the UI on time
+    return await Promise.race([fetch(url, {...init, signal: ctl.signal}), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** manual "Pull flags": fetch the URL and overwrite server records. */
-export async function pullFlags(url: string): Promise<PullResult> {
+export async function pullFlags(url: string, timeoutMs = PULL_TIMEOUT_MS): Promise<PullResult> {
   await load();
   if (!url) {
     throw new Error('no flags URL configured (Settings → Flags)');
   }
-  const res = await fetch(url, {headers: {Accept: 'application/json'}});
+  const res = await fetchWithTimeout('flags server', url, {headers: {Accept: 'application/json'}}, timeoutMs);
   if (!res.ok) {
     throw new Error(`flags server: HTTP ${res.status}`);
   }
-  const body = (await res.json()) as Record<string, unknown>;
+  let parsed: unknown;
+  try {
+    parsed = await res.json();
+  } catch {
+    throw new Error('flags server: response is not JSON');
+  }
+  const body = (typeof parsed === 'object' && parsed !== null ? parsed : {}) as Record<string, unknown>;
   if (!Array.isArray(body.flags)) {
     throw new Error('flags server: response has no flags array');
   }
@@ -270,30 +377,45 @@ export async function pullFlags(url: string): Promise<PullResult> {
   return {count: pulled.length, revision};
 }
 
-export async function toggleLocalFlag(mac: string, cls: Classification): Promise<void> {
+/** the local record a row for this device edits (see pickLocalRecord) */
+function findLocalRecord(cls: Classification, mac: string, opts: MatchOptions): FlagRecord | undefined {
+  return pickLocalRecord(matchDevice({...current, server: []}, cls, mac, opts), mac);
+}
+
+/**
+ * Row flag button: flip the local record that lands on this device — even
+ * one made under an earlier address — or create one for this MAC.
+ */
+export async function toggleLocalFlag(mac: string, cls: Classification, opts: MatchOptions = {}): Promise<void> {
   await load();
-  const id = localFlagId(mac);
-  const existing = current.local.find(r => r.id === id);
-  let local: FlagRecord[];
-  if (existing) {
-    local = current.local.map(r => (r.id === id ? {...r, flag: !r.flag} : r));
-  } else {
-    local = [
-      ...current.local,
-      {id, flag: true, note: '', matchers: autoMatchers(cls, mac), updatedAt: new Date().toISOString()},
-    ];
-  }
+  const existing = findLocalRecord(cls, mac, opts);
+  const now = new Date().toISOString();
+  const local: FlagRecord[] = existing
+    ? current.local.map(r => (r.id === existing.id ? {...r, flag: !r.flag, updatedAt: now} : r))
+    : [...current.local, {id: localFlagId(mac), flag: true, note: '', matchers: autoMatchers(cls, mac), updatedAt: now}];
   await save({...current, local});
 }
 
-export async function setLocalNote(mac: string, note: string, cls: Classification): Promise<void> {
+export async function setLocalNote(
+  mac: string,
+  note: string,
+  cls: Classification,
+  opts: MatchOptions = {},
+): Promise<void> {
   await load();
-  const id = localFlagId(mac);
-  const existing = current.local.find(r => r.id === id);
-  const local = existing
-    ? current.local.map(r => (r.id === id ? {...r, note, updatedAt: new Date().toISOString()} : r))
-    : [...current.local, {id, flag: true, note, matchers: autoMatchers(cls, mac)}];
-  await save({...current, local});
+  const existing = findLocalRecord(cls, mac, opts);
+  if (existing) {
+    await setLocalNoteById(existing.id, note);
+    return;
+  }
+  const rec: FlagRecord = {
+    id: localFlagId(mac),
+    flag: true,
+    note,
+    matchers: autoMatchers(cls, mac),
+    updatedAt: new Date().toISOString(),
+  };
+  await save({...current, local: [...current.local, rec]});
 }
 
 // ---- management (Settings → Flags): the full local list lives here, so
@@ -312,6 +434,10 @@ export async function setLocalFlagById(id: string, flag: boolean): Promise<void>
 
 export async function setLocalNoteById(id: string, note: string): Promise<void> {
   await load();
+  const existing = current.local.find(r => r.id === id);
+  if (!existing || existing.note === note) {
+    return; // unchanged (e.g. submit + end-editing both fired): no write
+  }
   await save({
     ...current,
     local: current.local.map(r =>
@@ -343,9 +469,18 @@ export function describeMatchers(rec: FlagRecord): string {
 
 // ---- upload (FLAGS.md v0): hunt files → server uploads/ directory ----------
 
-/** derive <base>/upload from the configured <base>/flags URL */
+/**
+ * Derive <base>/upload from the configured <base>/flags URL. <base> may
+ * carry a path prefix (flagsrv -base-path); a query string is kept. A URL
+ * whose path doesn't end in /flags is rejected rather than guessed at —
+ * posting the file to the flags URL itself only yields a confusing error.
+ */
 export function uploadUrl(flagsUrl: string): string {
-  return flagsUrl.replace(/\/flags\/?$/, '/upload');
+  const m = /^(https?:\/\/[^/?#]+(?:\/[^?#]*)?)\/flags\/?(\?[^#]*)?(?:#.*)?$/i.exec(flagsUrl.trim());
+  if (!m) {
+    throw new Error('flags URL must look like http(s)://host[/prefix]/flags to derive the upload URL');
+  }
+  return `${m[1]}/upload${m[2] ?? ''}`;
 }
 
 /**
@@ -358,6 +493,7 @@ export async function uploadHuntFile(
   password: string,
   filename: string,
   body: string | ArrayBuffer,
+  timeoutMs = UPLOAD_TIMEOUT_MS,
 ): Promise<void> {
   if (!flagsUrl) {
     throw new Error('no flags server configured (Settings → Flags)');
@@ -365,15 +501,21 @@ export async function uploadHuntFile(
   if (!password) {
     throw new Error('no upload password configured (Settings → Flags)');
   }
-  const res = await fetch(uploadUrl(flagsUrl), {
-    method: 'POST',
-    headers: {
-      'X-Upload-Key': password,
-      'X-File-Name': encodeURIComponent(filename),
-      'Content-Type': 'application/octet-stream',
+  const res = await fetchWithTimeout(
+    'upload server',
+    uploadUrl(flagsUrl),
+    {
+      method: 'POST',
+      headers: {
+        'X-Upload-Key': password,
+        // percent-encoded UTF-8 (FLAGS.md); the server decodes it
+        'X-File-Name': encodeURIComponent(filename),
+        'Content-Type': 'application/octet-stream',
+      },
+      body: body as BodyInit_,
     },
-    body: body as BodyInit_,
-  });
+    timeoutMs,
+  );
   if (!res.ok) {
     throw new Error(`upload server: HTTP ${res.status}`);
   }

@@ -23,7 +23,7 @@
       "flag": true,
       "note": "SMART-LOCK Eddystone beacon — installed identity, note the namespace",
       "matchers": [
-        { "kind": "eddy_uid", "value": "534D4152542D4C4F43" }
+        { "kind": "eddy_uid", "value": "534D4152542D4C4F434B" }
       ]
     }
   ]

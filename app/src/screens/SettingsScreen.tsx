@@ -246,15 +246,17 @@ function FlagsSection({
   const theme = useTheme();
   const styles = makeStyles(theme);
   const flags = useFlagsSnapshot();
-  const [status, setStatus] = useState<string | null>(null);
+  const [status, setStatus] = useState<{ok: boolean; text: string} | null>(null);
   const [busy, setBusy] = useState(false);
 
   const pull = () => {
     setStatus(null);
     setBusy(true);
     pullFlags(settings.flagsUrl)
-      .then(r => setStatus(`pulled ${r.count} flag record${r.count === 1 ? '' : 's'} (revision ${r.revision})`))
-      .catch(e => setStatus(`pull failed: ${String((e as Error)?.message ?? e)}`))
+      .then(r =>
+        setStatus({ok: true, text: `pulled ${r.count} flag record${r.count === 1 ? '' : 's'} (revision ${r.revision})`}),
+      )
+      .catch(e => setStatus({ok: false, text: `pull failed: ${String((e as Error)?.message ?? e)}`}))
       .finally(() => setBusy(false));
   };
 
@@ -316,9 +318,14 @@ function FlagsSection({
         A pull replaces the local copy of the server set wholesale; flags you
         made on this phone are never touched by it.
       </Text>
-      {status ? <Text style={styles.errorText}>{status}</Text> : null}
-      {[...flags.local, ...flags.server].map(rec => (
-        <FlagRow key={`${rec.id}`} rec={rec} />
+      {status ? <Text style={status.ok ? styles.okText : styles.errorText}>{status.text}</Text> : null}
+      {/* ownership is by held set, never id prefix: a server record may
+          carry any id, even one that looks like local-… */}
+      {flags.local.map(rec => (
+        <FlagRow key={`local:${rec.id}`} rec={rec} isLocal />
+      ))}
+      {flags.server.map(rec => (
+        <FlagRow key={`server:${rec.id}`} rec={rec} isLocal={false} />
       ))}
       {flags.local.length + flags.server.length === 0 ? (
         <Text style={styles.help}>No flag records held. Flag a device from its row on the scan screen.</Text>
@@ -339,22 +346,30 @@ function FlagsSection({
   );
 }
 
-function FlagRow({rec}: {rec: FlagRecord}): React.JSX.Element {
+function FlagRow({rec, isLocal}: {rec: FlagRecord; isLocal: boolean}): React.JSX.Element {
   const theme = useTheme();
   const styles = makeStyles(theme);
   const [note, setNote] = useState(rec.note);
-  const isLocal = rec.id.startsWith('local-');
+  // follow edits made elsewhere (a scan row) so a later blur here never
+  // writes stale text back over them
+  useEffect(() => setNote(rec.note), [rec.id, rec.note]);
   return (
     <View style={styles.flagRow}>
       <View style={styles.flagHead}>
         <Text style={styles.flagId}>{isLocal ? 'on this phone' : 'from server'}</Text>
-        <Pressable
-          style={[styles.choice, rec.flag && styles.choiceActive]}
-          onPress={() => isLocal && setLocalFlagById(rec.id, !rec.flag)}>
-          <Text style={[styles.choiceText, rec.flag && styles.choiceTextActive]}>
-            {rec.flag ? 'flagged' : 'off'}
-          </Text>
-        </Pressable>
+        {isLocal ? (
+          <Pressable
+            style={[styles.choice, rec.flag && styles.choiceActive]}
+            onPress={() => setLocalFlagById(rec.id, !rec.flag)}
+            accessibilityRole="button">
+            <Text style={[styles.choiceText, rec.flag && styles.choiceTextActive]}>
+              {rec.flag ? 'flagged' : 'off'}
+            </Text>
+          </Pressable>
+        ) : (
+          // server records are read-only here: a plain label, not a control
+          <Text style={[styles.flagState, rec.flag && styles.flagStateOn]}>{rec.flag ? 'flagged' : 'off'}</Text>
+        )}
         {isLocal ? (
           <Pressable style={styles.choice} onPress={() => deleteLocalFlag(rec.id)}>
             <Text style={styles.choiceText}>delete</Text>
@@ -369,7 +384,8 @@ function FlagRow({rec}: {rec: FlagRecord}): React.JSX.Element {
           onChangeText={setNote}
           placeholder="note…"
           placeholderTextColor={theme.textMuted}
-          onSubmitEditing={() => setLocalNoteById(rec.id, note)}
+          // return blurs a single-line input, so end-editing covers submit
+          // too; one handler = one save
           onEndEditing={() => setLocalNoteById(rec.id, note)}
         />
       ) : rec.note ? (
@@ -531,6 +547,7 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
     label: {fontSize: 14, color: theme.text, fontWeight: '600'},
     help: {fontSize: 12, color: theme.textMuted},
     errorText: {fontSize: 12, color: theme.danger},
+    okText: {fontSize: 12, color: theme.success},
     input: {
       borderRadius: 8,
       borderWidth: StyleSheet.hairlineWidth,
@@ -551,6 +568,8 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
     flagHead: {flexDirection: 'row', alignItems: 'center', gap: 8},
     flagId: {fontSize: 11, fontWeight: '700', color: theme.textMuted, flex: 1},
     flagNote: {fontSize: 12, color: theme.text},
+    flagState: {fontSize: 12, color: theme.textMuted, paddingHorizontal: 4},
+    flagStateOn: {color: theme.primary, fontWeight: '700'},
     optionRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 6},
     choice: {
       borderRadius: 8,

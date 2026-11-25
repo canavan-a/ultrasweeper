@@ -7,8 +7,15 @@ import {FlatList, Pressable, StyleSheet, Text, TextInput, View} from 'react-nati
 import {formatAgo} from '../ago';
 import {Icon} from '../components/Icon';
 import type {ScanEngine, ViewDevice} from '../engine';
-import {localFlagId, matchDevice, setLocalNote, toggleLocalFlag, useFlagsSnapshot} from '../flags';
-import type {MatchedFlag} from '../flags';
+import {
+  effectiveScanFilter,
+  matchDevice,
+  pickLocalRecord,
+  setLocalNoteById,
+  toggleLocalFlag,
+  useFlagsSnapshot,
+} from '../flags';
+import type {MatchedFlag, MatchOptions} from '../flags';
 import {describeRelative, Fix, formatFix} from '../geo';
 import {formatBytes} from '../huntlog';
 import {STALE_MS} from '../location';
@@ -35,16 +42,22 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
   const theme = useTheme();
   const styles = makeStyles(theme);
   const flags = useFlagsSnapshot();
-  const [filter, setFilter] = useState<Settings['scanFilter']>(settingsStore.get().scanFilter);
+  const [savedFilter, setFilter] = useState<Settings['scanFilter']>(settingsStore.get().scanFilter);
   const [pinned, setPinned] = useState<string[]>(settingsStore.get().pinnedMacs);
+  const [mergeGlitches, setMergeGlitches] = useState(settingsStore.get().mergeGlitches);
   useEffect(
     () =>
       settingsStore.subscribe(s => {
         setFilter(s.scanFilter);
         setPinned(s.pinnedMacs);
+        setMergeGlitches(s.mergeGlitches);
       }),
     [],
   );
+  // a saved 'flagged' with no flag records held shows All (the tab is hidden)
+  const filter = effectiveScanFilter(savedFilter, flags);
+  // flag MAC matchers fold glitch twins only when the list does
+  const matchOpts: MatchOptions = {glitchTolerant: mergeGlitches};
   const now = useNow(1000);
   const chooseFilter = (f: Settings['scanFilter']) => settingsStore.save({...settingsStore.get(), scanFilter: f});
 
@@ -102,7 +115,7 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
   const policeCount = engine.view.filter(d => d.police).length;
   // Flag records (flags.ts) are matched at render time: the record set is
   // small, and both the filter and the rows need the result.
-  const matched = new Map(engine.view.map(d => [d.mac, matchDevice(flags, d.cls, d.mac)]));
+  const matched = new Map(engine.view.map(d => [d.mac, matchDevice(flags, d.cls, d.mac, matchOpts)]));
   const isFlagged = (mac: string) => (matched.get(mac) ?? []).some(m => m.record.flag);
   const flaggedCount = engine.view.filter(d => isFlagged(d.mac)).length;
   // Police matches float to the top (likely before possible), each group
@@ -171,7 +184,14 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
         keyExtractor={it => it.key}
         renderItem={({item}) =>
           item.device ? (
-            <DeviceRow item={item.device} matched={matched.get(item.mac) ?? []} here={here} pinned={item.pinned} now={now} />
+            <DeviceRow
+              item={item.device}
+              matched={matched.get(item.mac) ?? []}
+              matchOpts={matchOpts}
+              here={here}
+              pinned={item.pinned}
+              now={now}
+            />
           ) : (
             <MissingPinRow mac={item.mac} />
           )
@@ -300,12 +320,24 @@ function MissingPinRow({mac}: {mac: string}): React.JSX.Element {
   );
 }
 
-function FlagButton({mac, cls, active}: {mac: string; cls: ViewDevice['cls']; active: boolean}): React.JSX.Element {
+function FlagButton({
+  mac,
+  cls,
+  active,
+  matchOpts,
+}: {
+  mac: string;
+  cls: ViewDevice['cls'];
+  active: boolean;
+  matchOpts: MatchOptions;
+}): React.JSX.Element {
   const theme = useTheme();
   const styles = makeStyles(theme);
   return (
     <Pressable
-      onPress={() => toggleLocalFlag(mac, cls)}
+      // flips whichever local record lands on this device (pickLocalRecord),
+      // even one made under an earlier address, else creates one
+      onPress={() => toggleLocalFlag(mac, cls, matchOpts)}
       hitSlop={10}
       style={styles.pinButton}
       accessibilityRole="button"
@@ -318,12 +350,14 @@ function FlagButton({mac, cls, active}: {mac: string; cls: ViewDevice['cls']; ac
 function DeviceRow({
   item,
   matched,
+  matchOpts,
   here,
   pinned,
   now,
 }: {
   item: ViewDevice;
   matched: MatchedFlag[];
+  matchOpts: MatchOptions;
   here: Fix | null;
   pinned: boolean;
   now: number;
@@ -348,10 +382,15 @@ function DeviceRow({
 
   const police = item.police;
   const flagged = matched.some(m => m.record.flag);
-  // notes are edited on the row only for the record made on this phone;
-  // server records are managed as a whole in Settings → Flags
-  const localRecord = matched.find(m => m.record.id === localFlagId(item.mac))?.record;
+  // notes are edited on the row only for a record made on this phone (the
+  // one for this MAC, or one made under an earlier address that still
+  // matches); server records are managed as a whole in Settings → Flags
+  const localRecord = pickLocalRecord(matched, item.mac);
   const [note, setNote] = useState(localRecord?.note ?? '');
+  // follow edits made elsewhere (Settings, delete/clear) so a later blur
+  // here never writes stale text back over them
+  const storedNote = localRecord?.note ?? '';
+  useEffect(() => setNote(storedNote), [localRecord?.id, storedNote]);
   const age = now - item.lastSeen;
   // fresh: heard within the last few batches; stale: probably gone
   const ageStyle = age < 10_000 ? styles.ageFresh : age < 60_000 ? styles.ageRecent : styles.ageStale;
@@ -384,7 +423,7 @@ function DeviceRow({
           {title}
         </Text>
         <Text style={styles.count}>{item.sightings}×</Text>
-        <FlagButton mac={item.mac} cls={cls} active={!!localRecord?.flag} />
+        <FlagButton mac={item.mac} cls={cls} active={!!localRecord?.flag} matchOpts={matchOpts} />
         <PinButton mac={item.mac} pinned={pinned} />
       </View>
       <Text style={[styles.age, pinned && styles.agePinned, ageStyle]}>last heard {formatAgo(age)}</Text>
@@ -392,9 +431,9 @@ function DeviceRow({
       {sub ? <Text style={styles.muted}>{sub}</Text> : null}
       {police ? <Text style={styles.muted}>{police.reasons.join(' · ')}</Text> : null}
       {matched
-        .filter(m => m.record.note && m.record.id !== localFlagId(item.mac))
+        .filter(m => m.record.note && m.record !== localRecord)
         .map(m => (
-          <Text key={m.record.id} style={styles.flagNote}>
+          <Text key={`${m.source}:${m.record.id}`} style={styles.flagNote}>
             ⚑ {m.record.note}
           </Text>
         ))}
@@ -405,8 +444,9 @@ function DeviceRow({
           onChangeText={setNote}
           placeholder="note for this flag…"
           placeholderTextColor={theme.textMuted}
-          onSubmitEditing={() => setLocalNote(item.mac, note, cls)}
-          onEndEditing={() => setLocalNote(item.mac, note, cls)}
+          // return blurs a single-line input, so end-editing covers submit
+          // too; one handler = one save
+          onEndEditing={() => setLocalNoteById(localRecord.id, note)}
         />
       ) : null}
       {item.bestFix ? (
