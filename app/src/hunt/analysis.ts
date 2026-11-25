@@ -17,10 +17,12 @@ const CRC_RANK: Record<string, number> = {'1': 3, P: 2, S: 1, '': 0};
 const crcRank = (crc: string): number => CRC_RANK[crc] ?? 0;
 
 // Re-classifying payloads is the expensive part of opening a hunt on the
-// map, so both the frames decoded and the distinct decodings kept per
-// device are capped. Devices that alternate a handful of frames need those;
-// rotating payloads (Apple's per-advertisement counters) collapse to one.
-const MAX_CLASSIFIED = 60;
+// map, so the frames decoded per device are capped. They are picked by
+// advertisement shape rather than by frequency: a phone broadcasts an
+// unbounded number of payloads whose counter bytes differ, and a beacon
+// that sends an Eddystone UID frame once an hour must still be found.
+const MAX_PER_SHAPE = 3;
+const MAX_CLASSIFIED = 20;
 const MAX_PAYLOADS = 12;
 
 export interface Sighting {
@@ -238,11 +240,13 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
       //
       // Payloads whose CRC only checked out structurally ('S') are left out
       // unless nothing better was heard: a bit-corrupt frame seen once would
-      // otherwise add a name or UID the device never broadcasts. Decodings
-      // that come out identical are collapsed, and only the first few
-      // distinct ones are kept: rotating payloads (Apple's per-advertisement
-      // counters) are otherwise unbounded, and one copy matches as well as
-      // thirty.
+      // otherwise add a name or UID the device never broadcasts. Of the rest,
+      // a few representatives of each distinct advertisement shape are
+      // decoded - shapes are what differs between a phone's rotating
+      // payloads (unbounded, all decoding alike) and the separate frame a
+      // beacon sends now and then (an Eddystone UID, a service UUID), and
+      // picking the most frequent payloads alone would drop the latter.
+      // Decodings that come out identical are then collapsed.
       const seenAd = new Map<string, {n: number; crc: string}>();
       for (const x of a) {
         if (!x.ad) continue;
@@ -258,10 +262,20 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
       // description: the best-verified common payload, as the scan screen's
       // engine picks one advertisement per device (src/devices.ts)
       const cls = ranked.length ? classify(mac, ranked[0][0]) : null;
+      const clean = ranked.filter(([, e]) => e.crc !== 'S');
+      const shapes = new Map<string, number>();
+      const samples: string[] = [];
+      for (const [ad] of clean.length ? clean : ranked) {
+        if (samples.length >= MAX_CLASSIFIED) break;
+        const shape = advertisementShape(ad);
+        const taken = shapes.get(shape) ?? 0;
+        if (taken >= MAX_PER_SHAPE) continue;
+        shapes.set(shape, taken + 1);
+        samples.push(ad);
+      }
       const payloads: Classification[] = [];
       const decoded = new Set<string>();
-      const clean = ranked.filter(([, e]) => e.crc !== 'S');
-      for (const [ad] of (clean.length ? clean : ranked).slice(0, MAX_CLASSIFIED)) {
+      for (const ad of samples) {
         const c = classify(mac, ad);
         const sig = payloadSignature(c);
         if (decoded.has(sig)) continue;
@@ -292,6 +306,29 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
 }
 
 // --- several hunts -> one device list -------------------------------------
+
+/**
+ * The shape of an advertisement: its header byte plus the AD structures it
+ * carries (type and length), not their bytes. Payloads of one shape differ
+ * only in the bytes that rotate (Apple's counters and hashes, a bit-flipped
+ * name), so decoding a few of them is enough to know what this device
+ * broadcasts in that form; a frame of another shape says something else,
+ * and that is the one worth keeping a sample of.
+ *
+ * This walks the length bytes only: it runs over every payload in the log,
+ * where parsePdu's allocations would be the bulk of the work.
+ */
+function advertisementShape(ad: string): string {
+  // header, declared length, AdvA: 8 fixed bytes, then (length, type, data)
+  const parts = [ad.slice(0, 4), `n${ad.length}`];
+  for (let i = 16; i + 4 <= ad.length; ) {
+    const len = parseInt(ad.slice(i, i + 2), 16);
+    if (!Number.isFinite(len) || len === 0 || i + 2 + len * 2 > ad.length) break;
+    parts.push(`${ad.slice(i + 2, i + 4)}:${len}`);
+    i += 2 + len * 2;
+  }
+  return parts.join(',');
+}
 
 /**
  * What a flag can see in one advertisement: the fields flags.ts matches on.

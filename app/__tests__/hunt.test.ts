@@ -153,6 +153,26 @@ describe('combineHunts / estimate', () => {
     expect(uids).toEqual(['22222222222222222222']);
   });
 
+  test('decodes one frame of each advertisement shape, not just the common ones', () => {
+    // a phone rotating its counter bytes: hundreds of payloads that all
+    // decode the same, plus the beacon frame it sends once. Ranking by
+    // frequency alone would spend the whole budget on the counter copies
+    // and never see the beacon frame the owner flagged
+    const tag = '7A:11:22:33:44:60';
+    const rows: Record<string, string | number>[] = [];
+    for (let s = 0; s < 200; s++) {
+      const ad = `4225${advA(tag)}1EFF4C001219${s.toString(16).padStart(4, '0')}${'00'.repeat(18)}`;
+      rows.push(seen(s, tag, ad, 42.7, -73.8, {crc: '1'}));
+    }
+    const ed = '0303AAFE1716AAFE00ED' + '33'.repeat(16);
+    rows.push(seen(900, tag, `02${(ed.length / 2 + 8).toString(16).padStart(2, '0')}${advA(tag)}${ed}`, 42.7, -73.8, {crc: '1'}));
+    const [d] = combineHunts([analyzeHunt('a', parseCsv(csv(rows)))]);
+    const uids = d.payloads.flatMap(c => c.eddystoneUids);
+    expect(uids).toEqual(['33333333333333333333']);
+    // the counter copies all decode alike: one entry, not two hundred
+    expect(d.payloads).toHaveLength(2);
+  });
+
   test('unions payloads and names for one MAC across hunts', () => {
     // one hunt logs the tag with only flags, the other with a local name:
     // a name or company matcher must hit however the hunts are ordered
