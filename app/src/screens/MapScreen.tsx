@@ -204,26 +204,25 @@ export function MapScreen(): React.JSX.Element {
     };
   }, [devices, minN, unusual, flagged]);
 
-  // the Flagged chip only exists while a flagged device is shown, so a
-  // stuck 'flagged' selection (all flags cleared meanwhile) is dropped
-  useEffect(() => {
-    if (filter === 'flagged' && counts.flagged === 0) {
-      setFilter('all');
-    }
-  }, [filter, counts]);
+  // the Flagged chip only exists while a flagged device is shown; a
+  // 'flagged' selection with nothing to show (all flags cleared, or the
+  // picked hunts no longer hold one) reads as All. Derived, not stored:
+  // the user's choice comes back as soon as it can be honoured, and the
+  // All chip is highlighted meanwhile so something always looks active
+  const eff: Filter = filter === 'flagged' && counts.flagged === 0 ? 'all' : filter;
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     return devices.filter(d => {
       if (d.n < minN) return false;
-      if (filter === 'police' && !d.police) return false;
-      if (filter === 'notpolice' && d.police) return false;
-      if (filter === 'unusual' && !unusual.has(d.mac)) return false;
-      if (filter === 'flagged' && !flagged.has(d.mac)) return false;
+      if (eff === 'police' && !d.police) return false;
+      if (eff === 'notpolice' && d.police) return false;
+      if (eff === 'unusual' && !unusual.has(d.mac)) return false;
+      if (eff === 'flagged' && !flagged.has(d.mac)) return false;
       if (q && !`${d.name} ${d.kind} ${d.vendor} ${d.mac}`.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [devices, minN, filter, query, unusual, flagged]);
+  }, [devices, minN, eff, query, unusual, flagged]);
 
   // --- map data ---
   const shapes = useMemo(() => {
@@ -398,8 +397,11 @@ export function MapScreen(): React.JSX.Element {
             <LineLayer
               id="est-line"
               style={{
-                lineColor: ['case', ['==', ['get', 'flagged'], 1], FLAG_RED, ['get', 'color']],
-                lineWidth: ['case', ['==', ['get', 'flagged'], 1], 3, 2],
+                // the estimate stays in the device's own hue for every
+                // device: the red ring on its spot is the flag marker, and a
+                // red line on a red police ring would say nothing
+                lineColor: ['get', 'color'],
+                lineWidth: 2,
                 lineDasharray: [2, 2],
               }}
             />
@@ -542,7 +544,7 @@ export function MapScreen(): React.JSX.Element {
             <Text style={styles.sheetH}>Show</Text>
             <View style={styles.wrap}>
               {FILTERS.filter(f => f.key !== 'flagged' || counts.flagged > 0).map(f => (
-                <Chip key={f.key} styles={styles} active={filter === f.key} label={`${f.label} ${counts[f.key]}`} onPress={() => setFilter(f.key)} />
+                <Chip key={f.key} styles={styles} active={eff === f.key} label={`${f.label} ${counts[f.key]}`} onPress={() => setFilter(f.key)} />
               ))}
             </View>
 

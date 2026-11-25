@@ -97,6 +97,31 @@ describe('combineHunts / estimate', () => {
     expect(d.cls!.companyIds).toContain(0x4c); // Apple: a flag's company matcher can hit
   });
 
+  test('unions the payloads one MAC is seen with inside one hunt', () => {
+    // a beacon that alternates a bare advertisement and an Eddystone-UID
+    // frame: the UID is rare, but a flag with an eddystone matcher must
+    // still hit the device on the map
+    const tag = '7A:11:22:33:44:58';
+    const eddy = (mac: string) => {
+      // the Eddystone-UID frame from the adparse tests: the declared PDU
+      // length must cover it, or the parser treats it as truncated
+      const ad = '0303AAFE1716AAFE00ED' + '11'.repeat(16);
+      return `02${(ad.length / 2 + 8).toString(16).padStart(2, '0')}${advA(mac)}${ad}`;
+    };
+    const h = analyzeHunt(
+      'a',
+      parseCsv(csv([
+        seen(0, tag, AD_PUBLIC(tag), 42.7, -73.8),
+        seen(1, tag, AD_PUBLIC(tag), 42.7, -73.8),
+        seen(2, tag, AD_PUBLIC(tag), 42.7002, -73.8),
+        seen(3, tag, eddy(tag), 42.7002, -73.8),
+      ])),
+    );
+    const [d] = combineHunts([h]);
+    expect(d.cls!.eddystoneUids).toEqual(['11111111111111111111']);
+    expect(d.cls!.vendor).toBe('Google LLC');
+  });
+
   test('unions payloads and names for one MAC across hunts', () => {
     // one hunt logs the tag with only flags, the other with a local name:
     // a name or company matcher must hit however the hunts are ordered

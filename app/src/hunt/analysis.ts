@@ -204,12 +204,22 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
         for (const x of a) if (x[k]) m.set(x[k], (m.get(x[k]) ?? 0) + 1);
         return [...m.entries()].sort((p, q) => q[1] - p[1])[0]?.[0] ?? '';
       };
-      // Re-classify the most common payload: old logs get today's lookup
-      // tables (the CSV's vendor column is what the app knew at capture time).
+      // Re-classify the payloads we saw, not just the commonest one: old
+      // logs get today's lookup tables (the CSV's vendor column is what the
+      // app knew at capture time), and a device that alternates payloads
+      // (an Eddystone UID in one, a service UUID in another) must keep every
+      // matcher that would hit on the scan screen. So the classifications are
+      // unioned. Distinct payloads are capped, most-frequent first: rotating
+      // payloads (Apple's per-advertisement counters) are otherwise unbounded,
+      // and they all decode to the same thing anyway.
       const ads = new Map<string, number>();
       for (const x of a) if (x.ad) ads.set(x.ad, (ads.get(x.ad) ?? 0) + 1);
-      const topAd = [...ads.entries()].sort((p, q) => q[1] - p[1])[0]?.[0];
-      const cls = topAd ? classify(mac, topAd) : null;
+      const MAX_PAYLOADS = 30;
+      let cls: Classification | null = null;
+      for (const [ad] of [...ads.entries()].sort((p, q) => q[1] - p[1]).slice(0, MAX_PAYLOADS)) {
+        const c = classify(mac, ad);
+        cls = cls ? mergeCls(cls, c) : c;
+      }
       return {
         mac,
         n: a.length,
