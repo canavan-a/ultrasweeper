@@ -152,7 +152,7 @@ export function MapScreen(): React.JSX.Element {
       // One match per payload this MAC was heard with, exactly as the scan
       // screen matches one advertisement: a name from one frame and a
       // service UUID from another never add up to one match.
-      const payloads: Classification[] = [...d.payloads];
+      const payloads: Classification[] = d.payloads.map(p => p.cls);
       // A stub always rides along: a MAC or OUI matcher reads the address
       // and needs some classification to be handed a record at all, which
       // matters for a device logged without any AD capture. Its name column

@@ -122,10 +122,10 @@ describe('combineHunts / estimate', () => {
     // description stays in the common payload
     expect(d.cls!.eddystoneUids).toEqual([]);
     // matching sees both frames, apart
-    const [eddyCls] = d.payloads.filter(c => c.eddystoneUids.length);
+    const [eddyCls] = d.payloads.map(p => p.cls).filter(c => c.eddystoneUids.length);
     expect(eddyCls.eddystoneUids).toEqual(['11111111111111111111']);
     expect(eddyCls.vendor).toBe('Google LLC');
-    expect(d.payloads.some(c => !c.eddystoneUids.length)).toBe(true);
+    expect(d.payloads.map(p => p.cls).some(c => !c.eddystoneUids.length)).toBe(true);
   });
 
   test('a CRC-checked frame outranks bit-flipped copies of the same shape', () => {
@@ -150,7 +150,7 @@ describe('combineHunts / estimate', () => {
       ])),
     );
     const [d] = combineHunts([h]);
-    const uids = d.payloads.flatMap(c => c.eddystoneUids);
+    const uids = d.payloads.map(p => p.cls).flatMap(c => c.eddystoneUids);
     expect(uids).toEqual(['22222222222222222222']);
   });
 
@@ -168,7 +168,7 @@ describe('combineHunts / estimate', () => {
     const ed = '0303AAFE1716AAFE00ED' + '33'.repeat(16);
     rows.push(seen(900, tag, `02${(ed.length / 2 + 8).toString(16).padStart(2, '0')}${advA(tag)}${ed}`, 42.7, -73.8, {crc: '1'}));
     const [d] = combineHunts([analyzeHunt('a', parseCsv(csv(rows)))]);
-    const uids = d.payloads.flatMap(c => c.eddystoneUids);
+    const uids = d.payloads.map(p => p.cls).flatMap(c => c.eddystoneUids);
     expect(uids).toEqual(['33333333333333333333']);
     // the counter copies all decode alike: one entry, not two hundred
     expect(d.payloads).toHaveLength(2);
@@ -190,8 +190,8 @@ describe('combineHunts / estimate', () => {
       const [d] = combineHunts(order);
       expect(d.n).toBe(5);
       // every hunt's evidence is available, and each stays inside its frame
-      expect(d.payloads.some(c => c.companyIds.includes(0x4c))).toBe(true); // Apple, from one hunt only
-      expect(d.payloads.some(c => c.name === 'AirTag-9')).toBe(true); // name, from another hunt only
+      expect(d.payloads.map(p => p.cls).some(c => c.companyIds.includes(0x4c))).toBe(true); // Apple, from one hunt only
+      expect(d.payloads.map(p => p.cls).some(c => c.name === 'AirTag-9')).toBe(true); // name, from another hunt only
     }
   });
 
@@ -222,9 +222,58 @@ describe('combineHunts / estimate', () => {
     ]) {
       const [d] = combineHunts(order);
       expect(d.payloads.length).toBeLessThanOrEqual(12);
-      const uids = d.payloads.flatMap(c => c.eddystoneUids);
+      const uids = d.payloads.map(p => p.cls).flatMap(c => c.eddystoneUids);
       expect(uids).toEqual(['33333333333333333333']);
     }
+  });
+
+  test('a CRC-checked frame outranks a corrupt copy heard in another hunt', () => {
+    // the tier rule reaches across hunts too: one hunt checked the frame's
+    // CRC, the other only its structure and heard a bit-flipped UID - the
+    // map must match the real UID, not the invented one
+    const tag = '7A:11:22:33:44:62';
+    const ed = '0303AAFE1716AAFE00ED' + '22'.repeat(16);
+    const hex = `02${(ed.length / 2 + 8).toString(16).padStart(2, '0')}${advA(tag)}${ed}`;
+    const checked = analyzeHunt(
+      'checked',
+      parseCsv(csv([seen(0, tag, hex, 42.7, -73.8, {crc: '1'})])),
+    );
+    const corrupt = analyzeHunt(
+      'corrupt',
+      parseCsv(csv([seen(0, tag, hex.replace('AAFE00ED', 'AAFE00EE'), 42.7, -73.8, {crc: 'S'})])),
+    );
+    for (const order of [
+      [checked, corrupt],
+      [corrupt, checked],
+    ]) {
+      const [d] = combineHunts(order);
+      const uids = d.payloads.map(p => p.cls).flatMap(c => c.eddystoneUids);
+      expect(uids).toEqual(['22222222222222222222']);
+    }
+  });
+
+  test('a frequent frame keeps its sample despite corrupt one-off copies', () => {
+    // a bit-flipped header or length byte makes one corrupt copy look like
+    // a whole new advertisement shape; those must not crowd the real frame
+    // out of the sample budget just because they sort by CRC tier and length
+    const tag = '7A:11:22:33:44:63';
+    const ed = '0303AAFE1716AAFE00ED' + '44'.repeat(16);
+    const hex = `02${(ed.length / 2 + 8).toString(16).padStart(2, '0')}${advA(tag)}${ed}`;
+    const rows: Record<string, string | number>[] = [];
+    for (let s = 0; s < 300; s++) {
+      rows.push(seen(s, tag, hex, 42.7, -73.8, {crc: 'S'}));
+    }
+    // thirty one-off copies, each with one more trailing unknown structure:
+    // all 'S', all longer than the real frame, so a length-first order puts
+    // them first even though none of them repeats
+    for (let n = 1; n <= 30; n++) {
+      const pad = `${(n + 1).toString(16).padStart(2, '0')}ff${'aa'.repeat(n)}`;
+      const len = (ed.length / 2 + 8 + pad.length / 2).toString(16).padStart(2, '0');
+      rows.push(seen(1000 + n, tag, `02${len}${hex.slice(4)}${pad}`, 42.7, -73.8, {crc: 'S'}));
+    }
+    const [d] = combineHunts([analyzeHunt('a', parseCsv(csv(rows)))]);
+    const uids = d.payloads.map(p => p.cls).flatMap(c => c.eddystoneUids);
+    expect(uids).toEqual(['44444444444444444444']);
   });
 });
 
