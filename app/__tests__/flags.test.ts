@@ -7,6 +7,7 @@ import {
   autoMatchers,
   effectiveScanFilter,
   matchDevice,
+  matchDevicePayloads,
   matchFlag,
   matchedNotes,
   mergeServerRecords,
@@ -95,6 +96,36 @@ describe('matchDevice', () => {
     const hits = matchDevice(snap as any, cls({name: 'Sonos Era 100', serviceUuids: ['FE07']}), '11:22:33:44:55:66');
     expect(hits.map(h => h.record.id)).toEqual(['srv-1', 'local-1']);
     expect(hits[0].hit).toEqual({kind: 'service', value: 'FE07'});
+  });
+});
+
+describe('matchDevicePayloads (one advertisement at a time)', () => {
+  const snap = {
+    revision: 1,
+    pulledAt: 0,
+    server: [
+      // both halves weak: the record only lands if one frame carries both
+      {id: 'weak', flag: true, note: '', matchers: [{kind: 'company', value: '4C00'}, {kind: 'service', value: 'FE07'}]},
+      {id: 'strong', flag: true, note: '', matchers: [{kind: 'eddy_uid', value: '11111111111111111111'}]},
+    ],
+    local: [] as FlagRecord[],
+  };
+  const named = cls({name: 'badge'});
+  const eddystone = cls({eddystoneUids: ['11111111111111111111']});
+  const mac = 'AA:BB:CC:DD:EE:01';
+
+  it('a weak matcher set needs every matcher in one payload', () => {
+    // company in one frame, service in the next: the scan screen would
+    // never see them together, so the record must not land
+    const split = matchDevicePayloads(snap as any, [named, cls({companyIds: [0x4c00]}), cls({serviceUuids: ['FE07']})], mac);
+    expect(split.map(m => m.record.id)).toEqual([]);
+    const together = matchDevicePayloads(snap as any, [cls({companyIds: [0x4c00], serviceUuids: ['FE07']})], mac);
+    expect(together.map(m => m.record.id)).toEqual(['weak']);
+  });
+
+  it('a strong matcher hits from whichever payload carries it, once', () => {
+    const hits = matchDevicePayloads(snap as any, [named, eddystone, eddystone, null], mac);
+    expect(hits.map(m => m.record.id)).toEqual(['strong']);
   });
 });
 

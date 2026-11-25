@@ -25,7 +25,7 @@ import {
 
 import {analyzeHunt, combineHunts, Hunt, huntLabel, MapDevice, parseCsv} from '../hunt/analysis';
 import {circleRing, deviceColor, fanOffset} from '../hunt/color';
-import {MatchOptions, matchedNotes, matchDevice, useFlagsSnapshot} from '../flags';
+import {MatchOptions, matchedNotes, matchDevicePayloads, useFlagsSnapshot} from '../flags';
 import type {Classification} from '../lookup/adparse';
 import {findUnusual, Unusual} from '../hunt/unusual';
 import {Icon} from '../components/Icon';
@@ -124,9 +124,9 @@ export function MapScreen(): React.JSX.Element {
   const devices = useMemo(() => combineHunts(hunts), [hunts]);
   const unusual = useMemo(() => findUnusual(hunts), [hunts]);
   // held flag records (local + pulled from the flags server): matched
-  // against each map device's classification (merged across the picked
-  // hunts, with the CSV's own name/vendor as fallback), so a flagged
-  // device gets the red ring and its notes can be shown in the list.
+  // against every advertisement each map device was heard with, one at a
+  // time, with the CSV's own name as a last fallback, so a flagged device
+  // gets the red ring and its notes can be shown in the list.
   // MAC glitch tolerance follows Settings → mergeGlitches, as on the scan
   // screen: the map's shard folding also demands a loudness ratio and a
   // time window, so with merging off two distinct near-MACs stay distinct
@@ -149,16 +149,19 @@ export function MapScreen(): React.JSX.Element {
     }
     const opts: MatchOptions = {glitchTolerant: mergeGlitches};
     for (const d of devices) {
-      // the CSV's own name/vendor always ride along: a re-classified
-      // payload without a local name must not lose the name column's one,
-      // and with no AD capture at all the stub is all there is
-      const cls = d.cls ?? EMPTY_CLS;
-      const match: Classification = {
-        ...cls,
-        name: cls.name ?? (d.name || undefined),
-        vendor: cls.vendor ?? (d.vendor || undefined),
-      };
-      const matched = matchDevice(flags, match, d.mac, opts).filter(m => m.record.flag);
+      // One match per payload this MAC was heard with, exactly as the scan
+      // screen matches one advertisement: a name from one frame and a
+      // service UUID from another never add up to one match.
+      const payloads: Classification[] = [...d.payloads];
+      // the CSV's own name column rides along too: it is what the logger
+      // decoded at capture time (a majority vote over the rows), and a
+      // device with no AD capture has nothing else. The stub carries no
+      // payload fields, so it can only ever add a name hit; an OUI or MAC
+      // matcher reads the MAC, not the classification.
+      if (d.name) {
+        payloads.push({...EMPTY_CLS, name: d.name});
+      }
+      const matched = matchDevicePayloads(flags, payloads, d.mac, opts).filter(m => m.record.flag);
       if (matched.length) {
         out.set(d.mac, matchedNotes(matched));
       }
@@ -255,7 +258,7 @@ export function MapScreen(): React.JSX.Element {
         type: 'FeatureCollection',
         features: chosen.map(d => ({
           type: 'Feature',
-          properties: {color: colors.get(d.mac), flagged: flagged.has(d.mac) ? 1 : 0},
+          properties: {color: colors.get(d.mac)},
           geometry: {type: 'Polygon', coordinates: [circleRing(d.est.lat, d.est.lon, d.est.r)]},
         })),
       } as GeoJSON.FeatureCollection,

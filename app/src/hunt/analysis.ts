@@ -10,6 +10,19 @@
 import {distanceM} from '../geo';
 import {classify, type Classification} from '../lookup/adparse';
 
+// CRC check quality of a record, same ranking the live scan engine uses
+// (src/devices.ts): '1' full, 'P' payload only, 'S' structure only (what
+// nearly every hunt record is), '' unknown.
+const CRC_RANK: Record<string, number> = {'1': 3, P: 2, S: 1, '': 0};
+const crcRank = (crc: string): number => CRC_RANK[crc] ?? 0;
+
+// Re-classifying payloads is the expensive part of opening a hunt on the
+// map, so both the frames decoded and the distinct decodings kept per
+// device are capped. Devices that alternate a handful of frames need those;
+// rotating payloads (Apple's per-advertisement counters) collapse to one.
+const MAX_CLASSIFIED = 60;
+const MAX_PAYLOADS = 12;
+
 export interface Sighting {
   t: number;
   mac: string;
@@ -19,6 +32,8 @@ export interface Sighting {
   lat: number | null;
   lon: number | null;
   ad: string;
+  /** CRC check quality of this record: '1' full, 'P' payload-only, 'S' structure only */
+  crc: string;
   /** the MAC this row was logged under, when it was folded into another */
   shardOf?: string;
 }
@@ -48,6 +63,12 @@ export interface HuntDevice {
   spread: number;
   /** re-classification of its most common payload (null: no AD capture) */
   cls: Classification | null;
+  /**
+   * re-classification of each other distinct payload it was heard with,
+   * most verified first, capped. Flags are matched one of these at a time,
+   * never across them.
+   */
+  payloads: Classification[];
   sightings: Sighting[];
 }
 
@@ -151,6 +172,7 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
         lat: num(r.lat),
         lon: num(r.lon),
         ad: r.ad ?? '',
+        crc: r.crc ?? '',
       };
       const list = byMac.get(s.mac);
       if (list) list.push(s);
@@ -204,21 +226,48 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
         for (const x of a) if (x[k]) m.set(x[k], (m.get(x[k]) ?? 0) + 1);
         return [...m.entries()].sort((p, q) => q[1] - p[1])[0]?.[0] ?? '';
       };
-      // Re-classify the payloads we saw, not just the commonest one: old
-      // logs get today's lookup tables (the CSV's vendor column is what the
-      // app knew at capture time), and a device that alternates payloads
-      // (an Eddystone UID in one, a service UUID in another) must keep every
-      // matcher that would hit on the scan screen. So the classifications are
-      // unioned. Distinct payloads are capped, most-frequent first: rotating
-      // payloads (Apple's per-advertisement counters) are otherwise unbounded,
-      // and they all decode to the same thing anyway.
-      const ads = new Map<string, number>();
-      for (const x of a) if (x.ad) ads.set(x.ad, (ads.get(x.ad) ?? 0) + 1);
-      const MAX_PAYLOADS = 30;
-      let cls: Classification | null = null;
-      for (const [ad] of [...ads.entries()].sort((p, q) => q[1] - p[1]).slice(0, MAX_PAYLOADS)) {
+      // Re-classify the payloads: old logs get today's lookup tables (the
+      // CSV's vendor column is what the app knew at capture time). The most
+      // common payload still describes the device; flag matching additionally
+      // sees the other payloads this MAC was heard with, because a beacon
+      // that alternates frames (an Eddystone UID in one, a service UUID in
+      // the next) must keep every matcher that would hit on the scan screen.
+      // Those are kept apart, never merged: matchDevicePayloads matches one
+      // advertisement at a time, so a flag can never read fields that were
+      // never in the same frame.
+      //
+      // Payloads whose CRC only checked out structurally ('S') are left out
+      // unless nothing better was heard: a bit-corrupt frame seen once would
+      // otherwise add a name or UID the device never broadcasts. Decodings
+      // that come out identical are collapsed, and only the first few
+      // distinct ones are kept: rotating payloads (Apple's per-advertisement
+      // counters) are otherwise unbounded, and one copy matches as well as
+      // thirty.
+      const seenAd = new Map<string, {n: number; crc: string}>();
+      for (const x of a) {
+        if (!x.ad) continue;
+        const e = seenAd.get(x.ad) ?? {n: 0, crc: ''};
+        e.n += 1;
+        if (crcRank(x.crc) > crcRank(e.crc)) e.crc = x.crc;
+        seenAd.set(x.ad, e);
+      }
+      const ranked = [...seenAd.entries()].sort(
+        (p, q) =>
+          q[1].n - p[1].n || crcRank(q[1].crc) - crcRank(p[1].crc) || q[0].length - p[0].length,
+      );
+      // description: the best-verified common payload, as the scan screen's
+      // engine picks one advertisement per device (src/devices.ts)
+      const cls = ranked.length ? classify(mac, ranked[0][0]) : null;
+      const payloads: Classification[] = [];
+      const decoded = new Set<string>();
+      const clean = ranked.filter(([, e]) => e.crc !== 'S');
+      for (const [ad] of (clean.length ? clean : ranked).slice(0, MAX_CLASSIFIED)) {
         const c = classify(mac, ad);
-        cls = cls ? mergeCls(cls, c) : c;
+        const sig = payloadSignature(c);
+        if (decoded.has(sig)) continue;
+        decoded.add(sig);
+        payloads.push(c);
+        if (payloads.length >= MAX_PAYLOADS) break;
       }
       return {
         mac,
@@ -229,6 +278,7 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
         vendor: cls?.vendor ?? mode('vendor'),
         kind: cls?.labels.find(l => !GENERIC_LABEL.test(l)) ?? '',
         cls,
+        payloads,
         police: mode('police'),
         shards: new Set(a.filter(x => x.shardOf).map(x => x.shardOf)).size,
         centroid,
@@ -243,26 +293,38 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
 
 // --- several hunts -> one device list -------------------------------------
 
-// combine two re-classifications of the same MAC: a name, company, service
-// or Eddystone UID only present in one hunt's payloads still matches.
-function mergeCls(a: Classification, b: Classification): Classification {
-  const uniq = (x: string[]) => [...new Set(x)];
-  const msd = new Map<number, string[]>();
-  for (const m of [...a.manufacturerData, ...b.manufacturerData]) {
-    msd.set(m.company, uniq([...(msd.get(m.company) ?? []), m.data]));
+/**
+ * What a flag can see in one advertisement: the fields flags.ts matches on.
+ * Two payloads with the same signature match exactly the same flags, so
+ * rotating counters (Apple's per-advertisement bytes) collapse to one entry.
+ */
+function payloadSignature(c: Classification): string {
+  return [
+    c.name ?? '',
+    c.companyIds.join(','),
+    c.serviceUuids.join(','),
+    c.serviceUuids128.join(','),
+    c.eddystoneUids.join(','),
+    c.manufacturerData.map(m => m.company).join(','),
+  ].join('|');
+}
+
+/**
+ * Concatenate two devices' payload lists (same MAC, different hunts), keeping
+ * the first copy of each distinct decoding and the overall cap.
+ */
+function mergePayloads(a: Classification[], b: Classification[]): Classification[] {
+  if (!a.length) return b.slice(0, MAX_PAYLOADS);
+  const out = a.slice();
+  const seen = new Set(out.map(payloadSignature));
+  for (const c of b) {
+    const sig = payloadSignature(c);
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    out.push(c);
+    if (out.length >= MAX_PAYLOADS) break;
   }
-  return {
-    ...a,
-    labels: uniq([...a.labels, ...b.labels]),
-    name: a.name ?? b.name,
-    vendor: a.vendor ?? b.vendor,
-    companyIds: [...new Set([...a.companyIds, ...b.companyIds])],
-    manufacturerData: [...msd.entries()].flatMap(([company, data]) => data.map(d => ({company, data: d}))),
-    serviceUuids: uniq([...a.serviceUuids, ...b.serviceUuids]),
-    serviceUuids128: uniq([...a.serviceUuids128, ...b.serviceUuids128]),
-    eddystoneUids: uniq([...a.eddystoneUids, ...b.eddystoneUids]),
-    randomAddress: a.randomAddress || b.randomAddress,
-  };
+  return out;
 }
 
 export interface MapDevice {
@@ -274,6 +336,8 @@ export interface MapDevice {
   n: number;
   /** re-classification from the most common payload, first device seen wins */
   cls: Classification | null;
+  /** re-classifications from the other payloads it was heard with */
+  payloads: Classification[];
   hunts: string[];
   /** sightings that had a fix, across all picked hunts */
   points: {t: number; lat: number; lon: number; hunt: string}[];
@@ -287,14 +351,15 @@ export function combineHunts(hunts: Hunt[]): MapDevice[] {
     for (const d of h.devices) {
       let x = byMac.get(d.mac);
       if (!x) {
-        x = {mac: d.mac, name: '', vendor: '', kind: '', police: '', n: 0, cls: null, hunts: [], points: [], est: {lat: 0, lon: 0, r: 0}};
+        x = {mac: d.mac, name: '', vendor: '', kind: '', police: '', n: 0, cls: null, payloads: [], hunts: [], points: [], est: {lat: 0, lon: 0, r: 0}};
         byMac.set(d.mac, x);
       }
       x.name ||= d.name;
       x.vendor ||= d.vendor;
       x.kind ||= d.kind;
       x.police ||= d.police;
-      x.cls = x.cls ? (d.cls ? mergeCls(x.cls, d.cls) : x.cls) : d.cls;
+      x.cls ??= d.cls;
+      x.payloads = mergePayloads(x.payloads, d.payloads);
       x.n += d.n;
       x.hunts.push(h.name);
       for (const s of d.sightings) {

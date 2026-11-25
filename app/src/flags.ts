@@ -175,6 +175,36 @@ export function matchDevice(
 }
 
 /**
+ * Match against each advertisement a device was heard with, separately: a
+ * hunt log records the same device sending different frames (an Eddystone
+ * UID in one, a service UUID in the next), and the scan screen matches
+ * whichever single frame it happened to keep. Merging the frames would let
+ * one flag read fields that were never in the same advertisement - a weak
+ * matcher set would hit on a name from one frame plus a service from
+ * another. So each payload is matched apart, and the results combined.
+ * Null payloads (no AD capture) are skipped.
+ */
+export function matchDevicePayloads(
+  snapshot: FlagsSnapshot,
+  payloads: (Classification | null)[],
+  mac: string,
+  opts: MatchOptions = {},
+): MatchedFlag[] {
+  const out: MatchedFlag[] = [];
+  const seen = new Set<string>();
+  for (const cls of payloads) {
+    if (!cls) continue;
+    for (const m of matchDevice(snapshot, cls, mac, opts)) {
+      const key = `${m.source}:${m.record.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(m);
+    }
+  }
+  return out;
+}
+
+/**
  * The on-phone record a scan row edits: the one created for this exact
  * MAC if it matched, else any other local record that lands on the device
  * (it rotated its address and still matches by name or Eddystone UID).

@@ -97,10 +97,11 @@ describe('combineHunts / estimate', () => {
     expect(d.cls!.companyIds).toContain(0x4c); // Apple: a flag's company matcher can hit
   });
 
-  test('unions the payloads one MAC is seen with inside one hunt', () => {
+  test('keeps every distinct payload one MAC is seen with in one hunt', () => {
     // a beacon that alternates a bare advertisement and an Eddystone-UID
     // frame: the UID is rare, but a flag with an eddystone matcher must
-    // still hit the device on the map
+    // still hit the device on the map - and only through the frame that
+    // actually carried it, never merged with the other one
     const tag = '7A:11:22:33:44:58';
     const eddy = (mac: string) => {
       // the Eddystone-UID frame from the adparse tests: the declared PDU
@@ -118,8 +119,38 @@ describe('combineHunts / estimate', () => {
       ])),
     );
     const [d] = combineHunts([h]);
-    expect(d.cls!.eddystoneUids).toEqual(['11111111111111111111']);
-    expect(d.cls!.vendor).toBe('Google LLC');
+    // description stays in the common payload
+    expect(d.cls!.eddystoneUids).toEqual([]);
+    // matching sees both frames, apart
+    const [eddyCls] = d.payloads.filter(c => c.eddystoneUids.length);
+    expect(eddyCls.eddystoneUids).toEqual(['11111111111111111111']);
+    expect(eddyCls.vendor).toBe('Google LLC');
+    expect(d.payloads.some(c => !c.eddystoneUids.length)).toBe(true);
+  });
+
+  test('ignores payloads that only checked out structurally', () => {
+    // nearly every record is CRC:S, so those are used when nothing better
+    // was heard; but a frame with a full CRC check outranks them, and a
+    // corrupt frame seen once must not add an evidence a flag can hit on
+    const tag = '7A:11:22:33:44:59';
+    const eddy = (mac: string) => {
+      const ad = '0303AAFE1716AAFE00ED' + '22'.repeat(16);
+      return `02${(ad.length / 2 + 8).toString(16).padStart(2, '0')}${advA(mac)}${ad}`;
+    };
+    const h = analyzeHunt(
+      'a',
+      parseCsv(csv([
+        seen(0, tag, eddy(tag), 42.7, -73.8, {crc: '1'}),
+        seen(1, tag, AD_PUBLIC(tag), 42.7, -73.8, {crc: '1'}),
+        seen(2, tag, AD_PUBLIC(tag), 42.7002, -73.8, {crc: '1'}),
+        seen(3, tag, AD_PUBLIC(tag), 42.7002, -73.8, {crc: '1'}),
+        // a bit-flipped copy of an Eddystone UID that was never broadcast
+        seen(4, tag, eddy(tag).replace('AAFE00ED', 'AAFE00EE'), 42.7002, -73.8, {crc: 'S'}),
+      ])),
+    );
+    const [d] = combineHunts([h]);
+    const uids = d.payloads.flatMap(c => c.eddystoneUids);
+    expect(uids).toEqual(['22222222222222222222']);
   });
 
   test('unions payloads and names for one MAC across hunts', () => {
@@ -137,8 +168,9 @@ describe('combineHunts / estimate', () => {
     ]) {
       const [d] = combineHunts(order);
       expect(d.n).toBe(5);
-      expect(d.cls!.companyIds).toContain(0x4c); // Apple, from one hunt only
-      expect(d.cls!.name).toBe('AirTag-9'); // local name, from another hunt only
+      // every hunt's evidence is available, and each stays inside its frame
+      expect(d.payloads.some(c => c.companyIds.includes(0x4c))).toBe(true); // Apple, from one hunt only
+      expect(d.payloads.some(c => c.name === 'AirTag-9')).toBe(true); // name, from another hunt only
     }
   });
 });
