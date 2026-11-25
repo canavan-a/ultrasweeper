@@ -120,23 +120,27 @@ export function parseCsv(text: string): Record<string, string>[] {
     .map(r => Object.fromEntries(header.map((k, i) => [k, r[i] ?? ''])));
 }
 
-/** Hamming distance between two MACs (48 bits, compared as two 24-bit halves). */
-export function macBitDistance(a: string, b: string): number {
-  const hx = (m: string) => m.replace(/:/g, '');
-  const pa = hx(a);
-  const pb = hx(b);
+/** a MAC as two 24-bit halves, for bit distances */
+function macHalves(mac: string): [number, number] {
+  const h = mac.replace(/:/g, '');
+  return [parseInt(h.slice(0, 6), 16), parseInt(h.slice(6, 12), 16)];
+}
+
+function bits24(x: number): number {
   let n = 0;
-  for (const [s, e] of [
-    [0, 6],
-    [6, 12],
-  ]) {
-    let x = (parseInt(pa.slice(s, e), 16) ^ parseInt(pb.slice(s, e), 16)) >>> 0;
-    while (x) {
-      x &= x - 1;
-      n++;
-    }
+  for (let v = x >>> 0; v; v &= v - 1) {
+    n++;
   }
   return n;
+}
+
+function halvesDistance(a: [number, number], b: [number, number]): number {
+  return bits24(a[0] ^ b[0]) + bits24(a[1] ^ b[1]);
+}
+
+/** Hamming distance between two MACs (48 bits, compared as two 24-bit halves). */
+export function macBitDistance(a: string, b: string): number {
+  return halvesDistance(macHalves(a), macHalves(b));
 }
 
 /** labels that say nothing beyond the vendor */
@@ -190,13 +194,17 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
   // never land that close by chance.
   const alias = new Map<string, string>();
   if (merge) {
-    const list = [...byMac.entries()].map(([mac, a]) => ({mac, a})).sort((p, q) => q.a.length - p.a.length);
+    // every MAC is compared with every louder one: parse the addresses once,
+    // not once per pair (thousands of MACs in a long hunt)
+    const list = [...byMac.entries()]
+      .map(([mac, a]) => ({mac, a, bits: macHalves(mac)}))
+      .sort((p, q) => q.a.length - p.a.length);
     for (let i = 1; i < list.length; i++) {
       const s = list[i];
       for (let j = 0; j < i; j++) {
         const p = list[j];
         if (p.a.length < s.a.length * ratio) break;
-        if (alias.has(p.mac) || macBitDistance(p.mac, s.mac) > maxBits) continue;
+        if (alias.has(p.mac) || halvesDistance(p.bits, s.bits) > maxBits) continue;
         if (s.a.some(x => p.a.some(y => Math.abs(x.t - y.t) <= windowMs))) {
           alias.set(s.mac, p.mac);
           break;
