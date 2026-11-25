@@ -279,6 +279,33 @@ describe('combineHunts / estimate', () => {
     expect(uids).toEqual(['44444444444444444444']);
   });
 
+  test('a frame outranked in one shape is still kept from another shape', () => {
+    // hunt A hears the name in two forms, both structure-only; hunt B
+    // CRC-checks the first form, with other bytes. B's check outranks A's
+    // copy of that form only - A's other form still carries the name, and
+    // must not vanish because both of A's forms decoded alike
+    const tag = '7A:11:22:33:44:65';
+    const hex = (ad: string) => `00${(6 + ad.length / 2).toString(16).padStart(2, '0')}${advA(tag)}${ad}`;
+    const name = (s: string) => `${(s.length + 1).toString(16).padStart(2, '0')}09${Buffer.from(s).toString('hex')}`;
+    const a = analyzeHunt(
+      'a',
+      parseCsv(csv([
+        ...[0, 1, 2, 3, 4].map(s => seen(s, tag, hex(`020106${name('Tag')}`), 42.7, -73.8, {crc: 'S'})),
+        ...[5, 6].map(s => seen(s, tag, hex(name('Tag')), 42.7, -73.8, {crc: 'S'})),
+      ])),
+    );
+    const b = analyzeHunt('b', parseCsv(csv([seen(0, tag, hex(`020106${name('Tbg')}`), 42.7, -73.8, {crc: '1'})])));
+    for (const order of [
+      [a, b],
+      [b, a],
+    ]) {
+      const [d] = combineHunts(order);
+      const names = d.payloads.map(p => p.cls.name);
+      expect(names).toContain('Tag');
+      expect(names).toContain('Tbg');
+    }
+  });
+
   test('a structure the capture cut short still tells shapes apart', () => {
     // FIFO truncation cuts the last AD structure short. A rotating Apple
     // frame and the beacon's Eddystone UID frame, both cut at the same

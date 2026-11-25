@@ -67,8 +67,9 @@ export interface HuntDevice {
   cls: Classification | null;
   /**
    * re-classification of each other distinct payload it was heard with,
-   * most verified first, capped. Flags are matched one of these at a time,
-   * never across them.
+   * most verified first, capped. One decoding may appear once per shape
+   * it was heard in (combineHunts collapses those). Flags are matched one
+   * of these at a time, never across them.
    */
   payloads: DevicePayload[];
   sightings: Sighting[];
@@ -301,15 +302,22 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
           if (g.ads[round]) samples.push({ad: g.ads[round], shape: g.shape, crc: g.tier});
         }
       }
+      // Identical decodings collapse per shape, not across shapes: another
+      // hunt may outrank this hunt's copy of one shape (mergePayloads), and
+      // the same decoding heard in a different shape must then survive it.
+      // The cap counts distinct decodings; the list itself stays within
+      // MAX_CLASSIFIED, as every entry is one sample.
       const payloads: DevicePayload[] = [];
       const decoded = new Set<string>();
+      const sigs = new Set<string>();
       for (const s of samples) {
         const c = classify(mac, s.ad);
         const sig = payloadSignature(c);
-        if (decoded.has(sig)) continue;
-        decoded.add(sig);
+        if (decoded.has(`${s.shape}|${sig}`)) continue;
+        if (!sigs.has(sig) && sigs.size >= MAX_PAYLOADS) continue;
+        decoded.add(`${s.shape}|${sig}`);
+        sigs.add(sig);
         payloads.push({cls: c, shape: s.shape, crc: s.crc});
-        if (payloads.length >= MAX_PAYLOADS) break;
       }
       return {
         mac,
@@ -408,7 +416,10 @@ function mergePayloads(sets: DevicePayload[][]): DevicePayload[] {
   }
   const out: DevicePayload[] = [];
   const seen = new Set<string>();
-  for (let i = 0; i < MAX_PAYLOADS; i++) {
+  // each hunt's list may hold one decoding under several shapes (see
+  // analyzeHunt), so walk the whole lists; the cap applies to `out`
+  const longest = Math.max(0, ...sets.map(s => s.length));
+  for (let i = 0; i < longest; i++) {
     let any = false;
     for (const set of sets) {
       const p = set[i];
