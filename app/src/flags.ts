@@ -10,6 +10,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {useEffect, useState} from 'react';
 
 import {hamming, macToBytes} from './devices';
+import {NOTE_MAX, noteLabel} from './note';
 import type {Classification} from './lookup/adparse';
 
 export type MatcherKind = 'mac' | 'name' | 'company' | 'service' | 'eddy_uid' | 'oui';
@@ -183,6 +184,25 @@ export function pickLocalRecord(matched: MatchedFlag[], mac: string): FlagRecord
   const local = matched.filter(m => m.source === 'local');
   const id = localFlagId(mac);
   return (local.find(m => m.record.id === id) ?? local[0])?.record;
+}
+
+/**
+ * The one-line description to show for a matched device: the note on the
+ * flagged on-phone record first, then a flagged server record's. Unflagged
+ * (disabled) records never describe the device. '' when nothing matches or
+ * none of them has a note.
+ */
+export function matchedNote(matched: MatchedFlag[]): string {
+  const ordered = matched
+    .filter(m => m.record.flag)
+    .sort((a, b) => (a.source === b.source ? 0 : a.source === 'local' ? -1 : 1));
+  for (const m of ordered) {
+    const label = noteLabel(m.record.note);
+    if (label) {
+      return label;
+    }
+  }
+  return '';
 }
 
 export type ScanFilter = 'all' | 'police' | 'flagged';
@@ -411,7 +431,7 @@ export async function setLocalNote(
   const rec: FlagRecord = {
     id: localFlagId(mac),
     flag: true,
-    note,
+    note: note.slice(0, NOTE_MAX),
     matchers: autoMatchers(cls, mac),
     updatedAt: new Date().toISOString(),
   };
@@ -435,13 +455,14 @@ export async function setLocalFlagById(id: string, flag: boolean): Promise<void>
 export async function setLocalNoteById(id: string, note: string): Promise<void> {
   await load();
   const existing = current.local.find(r => r.id === id);
-  if (!existing || existing.note === note) {
+  const capped = note.slice(0, NOTE_MAX);
+  if (!existing || existing.note === capped) {
     return; // unchanged (e.g. submit + end-editing both fired): no write
   }
   await save({
     ...current,
     local: current.local.map(r =>
-      r.id === id ? {...r, note, updatedAt: new Date().toISOString()} : r,
+      r.id === id ? {...r, note: capped, updatedAt: new Date().toISOString()} : r,
     ),
   });
 }

@@ -88,6 +88,14 @@ describe('combineHunts / estimate', () => {
     const h = analyzeHunt('a', parseCsv(csv([{unix_ms: BASE, kind: 'sighting', mac, ad: AD_PUBLIC(mac)}])));
     expect(combineHunts([h])).toHaveLength(0);
   });
+
+  test('carries the re-classification onto combined map devices', () => {
+    const tag = '7A:11:22:33:44:56';
+    const h = analyzeHunt('a', parseCsv(csv([seen(0, tag, AD_FINDMY(tag), 42.7, -73.8), seen(1, tag, AD_FINDMY(tag), 42.7002, -73.8)])));
+    const [d] = combineHunts([h]);
+    expect(d.cls).not.toBeNull();
+    expect(d.cls!.companyIds).toContain(0x4c); // Apple: a flag's company matcher can hit
+  });
 });
 
 describe('findUnusual', () => {

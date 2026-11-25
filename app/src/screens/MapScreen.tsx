@@ -3,7 +3,9 @@
 // A device's dots bunch along the stretch of road where it was in range;
 // tap a device (list or map) to isolate it and draw its estimated spot.
 // Tap empty map to clear. The camera moves when the picked hunts change and
-// when a device is picked from the list; never on a map tap.
+// when a device is picked from the list; never on a map tap. Held flag
+// records (src/flags.ts) mark matching devices with a red ring; the list
+// shows a flagged tag and, once picked, the flag's note.
 //
 // Basemap: OpenFreeMap (positron / dark), as in ../super-atlas. Analysis:
 // src/hunt/ (shard folding, unusual-device scoring).
@@ -23,21 +25,24 @@ import {
 
 import {analyzeHunt, combineHunts, Hunt, huntLabel, MapDevice, parseCsv} from '../hunt/analysis';
 import {circleRing, deviceColor, fanOffset} from '../hunt/color';
+import {matchedNote, matchDevice, useFlagsSnapshot} from '../flags';
 import {findUnusual, Unusual} from '../hunt/unusual';
 import {Icon} from '../components/Icon';
 import {formatBytes, huntLogAvailable, listLogs, LogFile, readLog} from '../huntlog';
 import {Theme, useTheme} from '../theme';
 
-type Filter = 'all' | 'police' | 'notpolice' | 'unusual';
+type Filter = 'all' | 'police' | 'notpolice' | 'unusual' | 'flagged';
 const FILTERS: {key: Filter; label: string}[] = [
   {key: 'all', label: 'All'},
   {key: 'police', label: 'Police'},
   {key: 'notpolice', label: 'Not police'},
   {key: 'unusual', label: 'Unusual'},
+  {key: 'flagged', label: 'Flagged'},
 ];
 /** finger-sized touch area around the dots, px */
 const HITBOX = {width: 32, height: 32};
 const POLICE_RED = '#e5484d';
+const FLAG_RED = '#e5484d';
 
 const isDark = (t: Theme) => !(t.name === 'light' || t.name === 'sepia');
 const deviceLabel = (d: MapDevice) => d.name || d.kind || d.vendor || 'unnamed';
@@ -104,6 +109,39 @@ export function MapScreen(): React.JSX.Element {
 
   const devices = useMemo(() => combineHunts(hunts), [hunts]);
   const unusual = useMemo(() => findUnusual(hunts), [hunts]);
+  // held flag records (local + pulled from the flags server): matched
+  // against each map device's re-classification (d.cls, or a stub of the
+  // CSV's name/vendor when a log has no AD hex), so a flagged device gets
+  // the red ring and its note can be shown in the list. Glitch tolerance
+  // stays at its default (true): the map always folds shard MACs, so
+  // flagged twins fold with them.
+  const flags = useFlagsSnapshot();
+  const flagged = useMemo(() => {
+    const out = new Map<string, string>(); // mac -> note to show ('' = flagged, no note)
+    if (flags.server.length + flags.local.length === 0) {
+      return out;
+    }
+    for (const d of devices) {
+      // without an AD capture there is no real classification; a stub of
+      // the CSV's own fields still lets mac/name/oui matchers land
+      const cls = d.cls ?? {
+        labels: [],
+        serviceUuids: [],
+        serviceUuids128: [],
+        companyIds: [],
+        manufacturerData: [],
+        eddystoneUids: [],
+        randomAddress: false,
+        name: d.name || undefined,
+        vendor: d.vendor || undefined,
+      };
+      const matched = matchDevice(flags, cls, d.mac).filter(m => m.record.flag);
+      if (matched.length) {
+        out.set(d.mac, matchedNote(matched));
+      }
+    }
+    return out;
+  }, [devices, flags]);
   const colors = useMemo(() => new Map(devices.map(d => [d.mac, d.police ? POLICE_RED : deviceColor(d.mac, dark)])), [devices, dark]);
   const byMac = useMemo(() => new Map(devices.map(d => [d.mac, d])), [devices]);
 
@@ -139,8 +177,9 @@ export function MapScreen(): React.JSX.Element {
       police: base.filter(d => d.police).length,
       notpolice: base.filter(d => !d.police).length,
       unusual: base.filter(d => unusual.has(d.mac)).length,
+      flagged: base.filter(d => flagged.has(d.mac)).length,
     };
-  }, [devices, minN, unusual]);
+  }, [devices, minN, unusual, flagged]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -149,10 +188,11 @@ export function MapScreen(): React.JSX.Element {
       if (filter === 'police' && !d.police) return false;
       if (filter === 'notpolice' && d.police) return false;
       if (filter === 'unusual' && !unusual.has(d.mac)) return false;
+      if (filter === 'flagged' && !flagged.has(d.mac)) return false;
       if (q && !`${d.name} ${d.kind} ${d.vendor} ${d.mac}`.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [devices, minN, filter, query, unusual]);
+  }, [devices, minN, filter, query, unusual, flagged]);
 
   // --- map data ---
   const shapes = useMemo(() => {
@@ -166,7 +206,7 @@ export function MapScreen(): React.JSX.Element {
         target.push({
           type: 'Feature',
           geometry: {type: 'Point', coordinates: [p.lon + dx, p.lat + dy]},
-          properties: {mac: d.mac, color: colors.get(d.mac), police: d.police ? 1 : 0},
+          properties: {mac: d.mac, color: colors.get(d.mac), police: d.police ? 1 : 0, flagged: flagged.has(d.mac) ? 1 : 0},
         });
       }
     }
@@ -185,7 +225,7 @@ export function MapScreen(): React.JSX.Element {
         type: 'FeatureCollection',
         features: chosen.map(d => ({
           type: 'Feature',
-          properties: {color: colors.get(d.mac)},
+          properties: {color: colors.get(d.mac), flagged: flagged.has(d.mac) ? 1 : 0},
           geometry: {type: 'Polygon', coordinates: [circleRing(d.est.lat, d.est.lon, d.est.r)]},
         })),
       } as GeoJSON.FeatureCollection,
@@ -193,12 +233,12 @@ export function MapScreen(): React.JSX.Element {
         type: 'FeatureCollection',
         features: chosen.map(d => ({
           type: 'Feature',
-          properties: {color: colors.get(d.mac), label: `${deviceLabel(d)}\n±${d.est.r.toFixed(0)} m`},
+          properties: {color: colors.get(d.mac), flagged: flagged.has(d.mac) ? 1 : 0, label: `${deviceLabel(d)}\n±${d.est.r.toFixed(0)} m`},
           geometry: {type: 'Point', coordinates: [d.est.lon, d.est.lat]},
         })),
       } as GeoJSON.FeatureCollection,
     };
-  }, [visible, selected, showOthers, fan, colors, devices, hunts]);
+  }, [visible, selected, showOthers, fan, colors, devices, hunts, flagged]);
 
   // --- selection ---
   const select = useCallback((mac: string, add = false) => {
@@ -313,7 +353,14 @@ export function MapScreen(): React.JSX.Element {
           </ShapeSource>
           <ShapeSource id="est" shape={shapes.est}>
             <FillLayer id="est-fill" style={{fillColor: ['get', 'color'], fillOpacity: 0.12}} />
-            <LineLayer id="est-line" style={{lineColor: ['get', 'color'], lineWidth: 2, lineDasharray: [2, 2]}} />
+            <LineLayer
+              id="est-line"
+              style={{
+                lineColor: ['case', ['==', ['get', 'flagged'], 1], FLAG_RED, ['get', 'color']],
+                lineWidth: ['case', ['==', ['get', 'flagged'], 1], 3, 2],
+                lineDasharray: [2, 2],
+              }}
+            />
           </ShapeSource>
           <ShapeSource id="dots" shape={shapes.on} hitbox={HITBOX} onPress={onDotsPress}>
             <CircleLayer
@@ -330,13 +377,22 @@ export function MapScreen(): React.JSX.Element {
                 ],
                 circleColor: ['get', 'color'],
                 circleOpacity: 0.85,
-                circleStrokeColor: surface,
-                circleStrokeWidth: ['interpolate', ['linear'], ['zoom'], 13, 0, 16, 1],
+                // flagged keeps its own hue but wears a red ring (target marker)
+                circleStrokeColor: ['case', ['==', ['get', 'flagged'], 1], FLAG_RED, surface],
+                circleStrokeWidth: ['case', ['==', ['get', 'flagged'], 1], ['interpolate', ['linear'], ['zoom'], 12, 1.5, 16, 3], ['interpolate', ['linear'], ['zoom'], 13, 0, 16, 1]],
               }}
             />
           </ShapeSource>
           <ShapeSource id="est-pt" shape={shapes.estPt}>
-            <CircleLayer id="est-dot" style={{circleRadius: 7, circleColor: ['get', 'color'], circleStrokeColor: surface, circleStrokeWidth: 2.5}} />
+            <CircleLayer
+              id="est-dot"
+              style={{
+                circleRadius: 7,
+                circleColor: ['get', 'color'],
+                circleStrokeColor: ['case', ['==', ['get', 'flagged'], 1], FLAG_RED, surface],
+                circleStrokeWidth: ['case', ['==', ['get', 'flagged'], 1], 3.5, 2.5],
+              }}
+            />
             <SymbolLayer
               id="est-label"
               style={{
@@ -376,6 +432,7 @@ export function MapScreen(): React.JSX.Element {
                     <View style={[styles.swatch, {backgroundColor: colors.get(m)}]} />
                     <Text style={styles.pickName} numberOfLines={1}>
                       {deviceLabel(d)}
+                      {flagged.has(m) ? <Text style={styles.flagTag}>  flagged</Text> : null}
                     </Text>
                     <Text style={styles.muted}>{d.n}</Text>
                   </Pressable>
@@ -497,6 +554,7 @@ export function MapScreen(): React.JSX.Element {
               d={item}
               color={colors.get(item.mac)!}
               unusual={unusual.get(item.mac)}
+              flagNote={flagged.get(item.mac)}
               selected={selected.has(item.mac)}
               styles={styles}
               onPress={() => selectFromList(item.mac)}
@@ -535,6 +593,7 @@ const DeviceRow = React.memo(function DeviceRow({
   d,
   color,
   unusual,
+  flagNote,
   selected,
   styles,
   onPress,
@@ -543,6 +602,8 @@ const DeviceRow = React.memo(function DeviceRow({
   d: MapDevice;
   color: string;
   unusual?: Unusual;
+  /** the flag's note when this device is flagged ('' = flagged, no note) */
+  flagNote?: string;
   selected: boolean;
   styles: Styles;
   onPress: () => void;
@@ -555,6 +616,7 @@ const DeviceRow = React.memo(function DeviceRow({
         <Text style={styles.rowName} numberOfLines={1}>
           {deviceLabel(d)}
           {d.police ? <Text style={styles.police}>  {d.police}</Text> : null}
+          {flagNote !== undefined ? <Text style={styles.flagTag}>  flagged</Text> : null}
         </Text>
         <Text style={styles.rowSub} numberOfLines={1}>
           {d.mac}
@@ -565,6 +627,7 @@ const DeviceRow = React.memo(function DeviceRow({
         {selected && (
           <>
             <Text style={styles.rowSub}>Estimated spot ±{d.est.r.toFixed(0)} m · {d.hunts.map(huntLabel).join(', ')}</Text>
+            {flagNote ? <Text style={styles.flagNote}>flag: {flagNote}</Text> : null}
             {unusual?.reasons.map(r => (
               <Text key={r.tag + r.why} style={styles.rowSub}>
                 • {r.why}
@@ -667,6 +730,8 @@ function makeStyles(t: Theme) {
     rowName: {fontSize: 14, color: t.text, fontWeight: '600'},
     rowSub: {fontSize: 11, color: t.textMuted, marginTop: 1},
     police: {color: POLICE_RED, fontSize: 12, fontWeight: '700'},
+    flagTag: {color: FLAG_RED, fontSize: 11, fontWeight: '700'},
+    flagNote: {fontSize: 12, color: t.text, marginTop: 3},
     rowCount: {alignItems: 'flex-end'},
     rowN: {fontSize: 13, color: t.text, fontVariant: ['tabular-nums']},
     pick: {

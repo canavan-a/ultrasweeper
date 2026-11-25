@@ -8,7 +8,7 @@
 // half of all MACs were such shards.
 
 import {distanceM} from '../geo';
-import {classify} from '../lookup/adparse';
+import {classify, type Classification} from '../lookup/adparse';
 
 export interface Sighting {
   t: number;
@@ -46,6 +46,8 @@ export interface HuntDevice {
   centroid: {lat: number; lon: number} | null;
   /** about the length of track it was heard along, m */
   spread: number;
+  /** re-classification of its most common payload (null: no AD capture) */
+  cls: Classification | null;
   sightings: Sighting[];
 }
 
@@ -216,6 +218,7 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
         name: mode('name') || cls?.name || '',
         vendor: cls?.vendor ?? mode('vendor'),
         kind: cls?.labels.find(l => !GENERIC_LABEL.test(l)) ?? '',
+        cls,
         police: mode('police'),
         shards: new Set(a.filter(x => x.shardOf).map(x => x.shardOf)).size,
         centroid,
@@ -237,6 +240,8 @@ export interface MapDevice {
   kind: string;
   police: string;
   n: number;
+  /** re-classification from the most common payload, first device seen wins */
+  cls: Classification | null;
   hunts: string[];
   /** sightings that had a fix, across all picked hunts */
   points: {t: number; lat: number; lon: number; hunt: string}[];
@@ -250,13 +255,14 @@ export function combineHunts(hunts: Hunt[]): MapDevice[] {
     for (const d of h.devices) {
       let x = byMac.get(d.mac);
       if (!x) {
-        x = {mac: d.mac, name: '', vendor: '', kind: '', police: '', n: 0, hunts: [], points: [], est: {lat: 0, lon: 0, r: 0}};
+        x = {mac: d.mac, name: '', vendor: '', kind: '', police: '', n: 0, cls: null, hunts: [], points: [], est: {lat: 0, lon: 0, r: 0}};
         byMac.set(d.mac, x);
       }
       x.name ||= d.name;
       x.vendor ||= d.vendor;
       x.kind ||= d.kind;
       x.police ||= d.police;
+      x.cls ||= d.cls;
       x.n += d.n;
       x.hunts.push(h.name);
       for (const s of d.sightings) {

@@ -3,15 +3,18 @@
 // devices.ts folds on; pulls replace server records but never local ones.
 import {
   FlagRecord,
+  FlagsSnapshot,
   autoMatchers,
   effectiveScanFilter,
   matchDevice,
   matchFlag,
+  matchedNote,
   mergeServerRecords,
   parseRecord,
   pickLocalRecord,
   uploadUrl,
 } from '../src/flags';
+import {NOTE_MAX, noteLabel} from '../src/note';
 import type {Classification} from '../src/lookup/adparse';
 
 function cls(over: Partial<Classification> = {}): Classification {
@@ -423,3 +426,51 @@ function localFlagIdOf(mac: string): string {
 function asyncStorageOf(m: any) {
   return m.default ?? m;
 }
+
+describe('matchedNote (the description shown for a matched device)', () => {
+  const m1: FlagRecord['matchers'][number] = {kind: 'mac', value: 'AA:BB:CC:DD:EE:01'};
+  const noted = (id: string, note: string, flag = true): FlagRecord => ({id, flag, note, matchers: [m1]});
+  const snap = (server: FlagRecord[], local: FlagRecord[]): FlagsSnapshot => ({revision: 0, pulledAt: null, server, local});
+
+  it('prefers the on-phone record, and only flagged records describe', () => {
+    const s = snap(
+      [noted('s1', 'server note')],
+      [noted(localFlagIdOf('AA:BB:CC:DD:EE:01'), 'my note'), noted('l2', 'disabled record', false)],
+    );
+    expect(matchedNote(matchDevice(s, cls(), 'AA:BB:CC:DD:EE:01'))).toBe('my note');
+  });
+
+  it('falls back to the server note when no local record has one', () => {
+    const s = snap([noted('s1', 'server note')], [noted(localFlagIdOf('AA:BB:CC:DD:EE:01'), '')]);
+    expect(matchedNote(matchDevice(s, cls(), 'AA:BB:CC:DD:EE:01'))).toBe('server note');
+  });
+
+  it('a disabled record never describes the device', () => {
+    const s = snap([noted('s1', 'server note', false)], []);
+    expect(matchedNote(matchDevice(s, cls(), 'AA:BB:CC:DD:EE:01'))).toBe('');
+  });
+
+  it('empty when nothing matches or no note is set', () => {
+    expect(matchedNote([])).toBe('');
+    const s = snap([noted('s1', '')], []);
+    expect(matchedNote(matchDevice(s, cls(), 'AA:BB:CC:DD:EE:01'))).toBe('');
+  });
+
+  it('flattens newlines and truncates for a one-line row', () => {
+    expect(noteLabel('  first line\nsecond one  ')).toBe('first line second one');
+    const long = noteLabel('x'.repeat(200));
+    expect(long).toHaveLength(80);
+    expect(long.endsWith('…')).toBe(true);
+  });
+
+  it('notes are capped at NOTE_MAX when stored', async () => {
+    let m!: typeof import('../src/flags');
+    jest.isolateModules(() => {
+      m = require('../src/flags');
+    });
+    await m.toggleLocalFlag('AA:BB:CC:DD:EE:09', cls());
+    const id = m.localFlagId('AA:BB:CC:DD:EE:09');
+    await m.setLocalNoteById(id, 'y'.repeat(NOTE_MAX + 100));
+    expect(m.flagsStore.get().local[0].note).toHaveLength(NOTE_MAX);
+  });
+});
