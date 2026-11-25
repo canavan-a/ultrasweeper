@@ -351,8 +351,12 @@ function advertisementShape(ad: string): string {
   const parts = [ad.slice(0, 4), `n${ad.length}`];
   for (let i = 16; i + 4 <= ad.length; ) {
     const len = parseInt(ad.slice(i, i + 2), 16);
-    if (!Number.isFinite(len) || len === 0 || i + 2 + len * 2 > ad.length) break;
+    if (!Number.isFinite(len) || len === 0) break;
     parts.push(`${ad.slice(i + 2, i + 4)}:${len}`);
+    // a structure the capture cut short still counts, as parsePdu still
+    // decodes it: FIFO truncation is common, and without its type two
+    // different frames cut at the same length would look like one shape
+    if (i + 2 + len * 2 > ad.length) break;
     i += 2 + len * 2;
   }
   return parts.join(',');

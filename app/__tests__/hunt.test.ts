@@ -275,6 +275,24 @@ describe('combineHunts / estimate', () => {
     const uids = d.payloads.map(p => p.cls).flatMap(c => c.eddystoneUids);
     expect(uids).toEqual(['44444444444444444444']);
   });
+
+  test('a structure the capture cut short still tells shapes apart', () => {
+    // FIFO truncation cuts the last AD structure short. A rotating Apple
+    // frame and the beacon's Eddystone UID frame, both cut at the same
+    // length, share every whole structure; if the cut-short one did not
+    // count, both would be one shape and the rotating copies would take
+    // every sample of it
+    const tag = '7A:11:22:33:44:64';
+    const rows: Record<string, string | number>[] = [];
+    for (let r = 0; r < 5; r++) {
+      const ad = `4225${advA(tag)}0201061AFF4C001219${r.toString(16).padStart(2, '0').repeat(10)}`;
+      for (let k = 0; k < 10; k++) rows.push(seen(r * 10 + k, tag, ad, 42.7, -73.8, {crc: 'S'}));
+    }
+    rows.push(seen(100, tag, `4225${advA(tag)}0201061716AAFE00ED${'55'.repeat(10)}`, 42.7, -73.8, {crc: 'S'}));
+    const [d] = combineHunts([analyzeHunt('a', parseCsv(csv(rows)))]);
+    const uids = d.payloads.map(p => p.cls).flatMap(c => c.eddystoneUids);
+    expect(uids).toEqual(['55555555555555555555']);
+  });
 });
 
 describe('findUnusual', () => {
