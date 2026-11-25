@@ -257,19 +257,22 @@ describe('combineHunts / estimate', () => {
     // a whole new advertisement shape; those must not crowd the real frame
     // out of the sample budget just because they sort by CRC tier and length
     const tag = '7A:11:22:33:44:63';
-    const ed = '0303AAFE1716AAFE00ED' + '44'.repeat(16);
-    const hex = `02${(ed.length / 2 + 8).toString(16).padStart(2, '0')}${advA(tag)}${ed}`;
+    // a whole Eddystone UID frame (namespace, instance, RFU), nothing cut
+    const frame = (type: string, tail = '') => {
+      const ed = `0303AAFE1716AAFE${type}ED${'44'.repeat(16)}0000${tail}`;
+      return `02${(6 + ed.length / 2).toString(16).padStart(2, '0')}${advA(tag)}${ed}`;
+    };
     const rows: Record<string, string | number>[] = [];
     for (let s = 0; s < 300; s++) {
-      rows.push(seen(s, tag, hex, 42.7, -73.8, {crc: 'S'}));
+      rows.push(seen(s, tag, frame('00'), 42.7, -73.8, {crc: 'S'}));
     }
-    // thirty one-off copies, each with one more trailing unknown structure:
-    // all 'S', all longer than the real frame, so a length-first order puts
-    // them first even though none of them repeats
+    // thirty one-off copies with the frame type bit-flipped (no UID decodes
+    // from them) and one more trailing structure each: all 'S', all longer
+    // than the real frame, so a length-first order would spend every sample
+    // on them even though none of them repeats
     for (let n = 1; n <= 30; n++) {
       const pad = `${(n + 1).toString(16).padStart(2, '0')}ff${'aa'.repeat(n)}`;
-      const len = (ed.length / 2 + 8 + pad.length / 2).toString(16).padStart(2, '0');
-      rows.push(seen(1000 + n, tag, `02${len}${hex.slice(4)}${pad}`, 42.7, -73.8, {crc: 'S'}));
+      rows.push(seen(1000 + n, tag, frame('20', pad), 42.7, -73.8, {crc: 'S'}));
     }
     const [d] = combineHunts([analyzeHunt('a', parseCsv(csv(rows)))]);
     const uids = d.payloads.map(p => p.cls).flatMap(c => c.eddystoneUids);
