@@ -204,21 +204,26 @@ export function MapScreen(): React.JSX.Element {
     };
   }, [devices, minN, unusual, flagged]);
 
+  // the Flagged chip only exists while a flagged device is shown, so a
+  // stuck 'flagged' selection (all flags cleared meanwhile) is dropped
+  useEffect(() => {
+    if (filter === 'flagged' && counts.flagged === 0) {
+      setFilter('all');
+    }
+  }, [filter, counts]);
+
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    // the Flagged chip only exists while any flagged device is shown: a
-    // stuck 'flagged' filter (all flags cleared meanwhile) falls back to All
-    const eff: Filter = filter === 'flagged' && counts.flagged === 0 ? 'all' : filter;
     return devices.filter(d => {
       if (d.n < minN) return false;
-      if (eff === 'police' && !d.police) return false;
-      if (eff === 'notpolice' && d.police) return false;
-      if (eff === 'unusual' && !unusual.has(d.mac)) return false;
-      if (eff === 'flagged' && !flagged.has(d.mac)) return false;
+      if (filter === 'police' && !d.police) return false;
+      if (filter === 'notpolice' && d.police) return false;
+      if (filter === 'unusual' && !unusual.has(d.mac)) return false;
+      if (filter === 'flagged' && !flagged.has(d.mac)) return false;
       if (q && !`${d.name} ${d.kind} ${d.vendor} ${d.mac}`.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [devices, minN, filter, query, unusual, flagged, counts]);
+  }, [devices, minN, filter, query, unusual, flagged]);
 
   // --- map data ---
   const shapes = useMemo(() => {
@@ -401,6 +406,29 @@ export function MapScreen(): React.JSX.Element {
           </ShapeSource>
           <ShapeSource id="dots" shape={shapes.on} hitbox={HITBOX} onPress={onDotsPress}>
             <CircleLayer
+              id="dots-flag-ring"
+              filter={['==', ['get', 'flagged'], 1]}
+              style={{
+                // target marker: a red ring with clear air around the dot,
+                // so it stays visible even on red-filled (police) dots.
+                // Drawn under the dots: the sort that keeps police dots on
+                // top still decides where they overlap a ring. Radius sits
+                // a few px outside dots-circle at every zoom.
+                circleRadius: [
+                  'interpolate',
+                  ['linear'],
+                  ['zoom'],
+                  12,
+                  ['case', ['==', ['get', 'police'], 1], 7.5, 6],
+                  17,
+                  ['case', ['==', ['get', 'police'], 1], 12.5, 9.5],
+                ],
+                circleColor: 'rgba(0,0,0,0)',
+                circleStrokeColor: FLAG_RED,
+                circleStrokeWidth: ['interpolate', ['linear'], ['zoom'], 12, 1.5, 16, 2.5],
+              }}
+            />
+            <CircleLayer
               id="dots-circle"
               style={{
                 circleRadius: [
@@ -416,27 +444,6 @@ export function MapScreen(): React.JSX.Element {
                 circleOpacity: 0.85,
                 circleStrokeColor: surface,
                 circleStrokeWidth: ['interpolate', ['linear'], ['zoom'], 13, 0, 16, 1],
-              }}
-            />
-            <CircleLayer
-              id="dots-flag-ring"
-              filter={['==', ['get', 'flagged'], 1]}
-              style={{
-                // target marker: a red ring with clear air around the dot,
-                // so it stays visible even on red-filled (police) dots.
-                // Radius sits a few px outside dots-circle at every zoom.
-                circleRadius: [
-                  'interpolate',
-                  ['linear'],
-                  ['zoom'],
-                  12,
-                  ['case', ['==', ['get', 'police'], 1], 7.5, 6],
-                  17,
-                  ['case', ['==', ['get', 'police'], 1], 12.5, 9.5],
-                ],
-                circleColor: 'rgba(0,0,0,0)',
-                circleStrokeColor: FLAG_RED,
-                circleStrokeWidth: ['interpolate', ['linear'], ['zoom'], 12, 1.5, 16, 2.5],
               }}
             />
           </ShapeSource>
@@ -485,8 +492,9 @@ export function MapScreen(): React.JSX.Element {
                   <Pressable key={m} style={styles.pickRow} onPress={() => select(m)} onLongPress={() => select(m, true)}>
                     <View style={[styles.swatch, {backgroundColor: colors.get(m)}]} />
                     <Text style={styles.pickName} numberOfLines={1}>
+                      {/* marker first: a trailing tag would be cut off with the name */}
+                      {flagged.has(m) ? <Text style={styles.flagTag}>⚑ </Text> : null}
                       {deviceLabel(d)}
-                      {flagged.has(m) ? <Text style={styles.flagTag}>  flagged</Text> : null}
                     </Text>
                     <Text style={styles.muted}>{d.n}</Text>
                   </Pressable>
@@ -682,8 +690,8 @@ const DeviceRow = React.memo(function DeviceRow({
         {selected && (
           <>
             <Text style={styles.rowSub}>Estimated spot ±{d.est.r.toFixed(0)} m · {d.hunts.map(huntLabel).join(', ')}</Text>
-            {flagNotes?.map(n => (
-              <Text key={n} style={styles.flagNote}>⚑ {n}</Text>
+            {flagNotes?.map((n, i) => (
+              <Text key={`${i}:${n}`} style={styles.flagNote}>⚑ {n}</Text>
             ))}
             {unusual?.reasons.map(r => (
               <Text key={r.tag + r.why} style={styles.rowSub}>

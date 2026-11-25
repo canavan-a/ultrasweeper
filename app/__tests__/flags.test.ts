@@ -462,6 +462,11 @@ describe('matchedNotes (the full description shown for a picked device)', () => 
     expect(matchedNotes(matchDevice(s, cls(), 'AA:BB:CC:DD:EE:01'))).toEqual([]);
   });
 
+  it('the same note on two records is shown once', () => {
+    const s = snap([rec('s1', 'same note')], [rec('local-aabbccddeeff01', 'same note')]);
+    expect(matchedNotes(matchDevice(s, cls(), 'AA:BB:CC:DD:EE:01'))).toEqual(['same note']);
+  });
+
   it('a server note longer than the cap arrives capped', () => {
     const parsed = parseRecord({
       id: 's1',
@@ -473,9 +478,10 @@ describe('matchedNotes (the full description shown for a picked device)', () => 
     expect(parsed.note).toBe('y'.repeat(NOTE_MAX));
   });
 
-  it('capNote counts code points, never splitting an emoji in half', () => {
-    const capped = capNote('🏷'.repeat(NOTE_MAX + 5));
-    expect(Array.from(capped)).toHaveLength(NOTE_MAX);
-    expect(capped).toBe('🏷'.repeat(NOTE_MAX));
+  it('capNote counts UTF-16 units like the input limit, never splitting an emoji', () => {
+    expect(capNote('🏷'.repeat(NOTE_MAX + 5))).toBe('🏷'.repeat(NOTE_MAX / 2));
+    // a pair straddling the limit is dropped whole rather than cut in half
+    const straddle = 'x'.repeat(NOTE_MAX - 1) + '🏷';
+    expect(capNote(straddle)).toBe('x'.repeat(NOTE_MAX - 1));
   });
 });

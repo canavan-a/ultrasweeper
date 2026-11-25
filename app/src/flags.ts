@@ -195,7 +195,16 @@ export function matchedNotes(matched: MatchedFlag[]): string[] {
   const ordered = matched
     .filter(m => m.record.flag)
     .sort((a, b) => (a.source === b.source ? 0 : a.source === 'local' ? -1 : 1));
-  return ordered.map(m => m.record.note).filter(n => n && n.trim()).map(n => n.trim());
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of ordered) {
+    const note = m.record.note.trim();
+    if (note && !seen.has(note)) {
+      seen.add(note);
+      out.push(note);
+    }
+  }
+  return out;
 }
 
 export type ScanFilter = 'all' | 'police' | 'flagged';

@@ -1,12 +1,14 @@
-export const NOTE_MAX = 500;
+export const NOTE_MAX = 500; // UTF-16 units: the same unit a TextInput maxLength counts
 
-// cut at code points, not UTF-16 units, so an emoji is never sliced in half
-function cut(s: string, n: number): string {
-  const chars = Array.from(s);
-  return chars.length <= n ? s : chars.slice(0, n).join('');
-}
-
-/** store-time cap for note fields */
+/**
+ * store-time cap for note fields. Backs off when the cut would land between
+ * the two halves of a surrogate pair, so an emoji is never left half-written.
+ */
 export function capNote(note: string): string {
-  return cut(note, NOTE_MAX);
+  if (note.length <= NOTE_MAX) {
+    return note;
+  }
+  const last = note.charCodeAt(NOTE_MAX - 1);
+  const splitSurrogate = last >= 0xd800 && last <= 0xdbff;
+  return note.slice(0, splitSurrogate ? NOTE_MAX - 1 : NOTE_MAX);
 }
