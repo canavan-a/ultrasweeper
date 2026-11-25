@@ -133,14 +133,14 @@ describe('matchDevicePayloads (one advertisement at a time)', () => {
 describe('matchLoggedDevice (map devices out of hunt logs)', () => {
   const parent = '54:92:6A:C4:6D:2D';
   const shard = '54:92:6A:C4:65:2D'; // 1 bit off, folded in by the map
-  const rec = (id: string, matchers: FlagRecord['matchers']): FlagRecord => ({id, flag: true, note: id, matchers});
+  const record = (id: string, matchers: FlagRecord['matchers']): FlagRecord => ({id, flag: true, note: id, matchers});
   const snap = (server: FlagRecord[]) => ({revision: 1, pulledAt: 0, server, local: [] as FlagRecord[]});
   const dev = {mac: parent, name: '', payloads: [] as Classification[], aliases: [shard]};
 
   it('a flag on a folded shard MAC lands with glitch folding off', () => {
     // the scan screen lists the shard as its own device then, and a flag
     // made on that row names only the shard's address
-    const s = snap([rec('shard', [{kind: 'mac', value: shard}, {kind: 'company', value: '004C'}])]);
+    const s = snap([record('shard', [{kind: 'mac', value: shard}, {kind: 'company', value: '004C'}])]);
     expect(matchLoggedDevice(s, dev, {glitchTolerant: false}).map(m => m.record.id)).toEqual(['shard']);
     expect(matchLoggedDevice(s, {...dev, aliases: []}, {glitchTolerant: false})).toEqual([]);
     // and once, with tolerance on, where the parent MAC hits already
@@ -151,16 +151,16 @@ describe('matchLoggedDevice (map devices out of hunt logs)', () => {
     const s = snap([
       // 1 bit from the shard, 2 from the parent: a different device with
       // folding off
-      rec('near', [{kind: 'mac', value: '54:92:6A:C4:64:2D'}]),
+      record('near', [{kind: 'mac', value: '54:92:6A:C4:64:2D'}]),
       // weak-only: an OUI read off a bit-flipped address proves nothing
-      rec('oui', [{kind: 'oui', value: '54926A'}]),
+      record('oui', [{kind: 'oui', value: '54926A'}]),
     ]);
     const shardOnly = {...dev, mac: 'AA:BB:CC:DD:EE:FF'};
     expect(matchLoggedDevice(s, shardOnly, {glitchTolerant: false})).toEqual([]);
   });
 
   it('the logged name and the address still match with no AD capture', () => {
-    const s = snap([rec('name', [{kind: 'name', value: 'badge'}]), rec('mac', [{kind: 'mac', value: parent}])]);
+    const s = snap([record('name', [{kind: 'name', value: 'badge'}]), record('mac', [{kind: 'mac', value: parent}])]);
     const hits = matchLoggedDevice(s, {...dev, name: 'Badge', aliases: []});
     expect(hits.map(m => m.record.id)).toEqual(['name', 'mac']);
   });

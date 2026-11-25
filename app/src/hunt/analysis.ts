@@ -313,8 +313,9 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
       for (const s of samples) {
         const c = classify(mac, s.ad);
         const sig = payloadSignature(c);
-        if (decoded.has(`${s.shape}|${sig}`)) continue;
-        if (!sigs.has(sig) && sigs.size >= MAX_PAYLOADS) continue;
+        if (decoded.has(`${s.shape}|${sig}`) || (!sigs.has(sig) && sigs.size >= MAX_PAYLOADS)) {
+          continue;
+        }
         decoded.add(`${s.shape}|${sig}`);
         sigs.add(sig);
         payloads.push({cls: c, shape: s.shape, crc: s.crc});
@@ -497,7 +498,11 @@ export function combineHunts(hunts: Hunt[]): MapDevice[] {
       x.n += d.n;
       x.hunts.push(h.name);
       const shards = new Set(x.aliases);
-      for (const s of d.sightings) if (s.shardOf) shards.add(s.shardOf);
+      for (const s of d.sightings) {
+        if (s.shardOf) {
+          shards.add(s.shardOf);
+        }
+      }
       x.aliases = [...shards];
       for (const s of d.sightings) {
         if (s.lat != null && s.lon != null) x.points.push({t: s.t, lat: s.lat, lon: s.lon, hunt: h.name});

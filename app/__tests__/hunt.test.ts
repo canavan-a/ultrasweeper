@@ -322,7 +322,9 @@ describe('combineHunts / estimate', () => {
     const rows: Record<string, string | number>[] = [];
     for (let r = 0; r < 5; r++) {
       const ad = `4225${advA(tag)}0201061AFF4C001219${r.toString(16).padStart(2, '0').repeat(10)}`;
-      for (let k = 0; k < 10; k++) rows.push(seen(r * 10 + k, tag, ad, 42.7, -73.8, {crc: 'S'}));
+      for (let k = 0; k < 10; k++) {
+        rows.push(seen(r * 10 + k, tag, ad, 42.7, -73.8, {crc: 'S'}));
+      }
     }
     rows.push(seen(100, tag, `4225${advA(tag)}0201061716AAFE00ED${'55'.repeat(10)}`, 42.7, -73.8, {crc: 'S'}));
     const [d] = combineHunts([analyzeHunt('a', parseCsv(csv(rows)))]);

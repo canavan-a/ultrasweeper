@@ -258,7 +258,9 @@ export function matchLoggedDevice(
   for (const alias of device.aliases) {
     for (const m of matchDevice(snapshot, NO_PAYLOAD, alias, {glitchTolerant: false})) {
       const key = `${m.source}:${m.record.id}`;
-      if (m.hit.kind !== 'mac' || seen.has(key)) continue;
+      if (m.hit.kind !== 'mac' || seen.has(key)) {
+        continue;
+      }
       seen.add(key);
       out.push(m);
     }
