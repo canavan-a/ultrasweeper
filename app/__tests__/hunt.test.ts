@@ -96,6 +96,26 @@ describe('combineHunts / estimate', () => {
     expect(d.cls).not.toBeNull();
     expect(d.cls!.companyIds).toContain(0x4c); // Apple: a flag's company matcher can hit
   });
+
+  test('unions payloads and names for one MAC across hunts', () => {
+    // one hunt logs the tag with only flags, the other with a local name:
+    // a name or company matcher must hit however the hunts are ordered
+    const tag = '7A:11:22:33:44:57';
+    // flags AD + Complete Local Name ('AirTag-9'), length bytes correct
+    const AD_NAMED = (mac: string) => `0013${advA(mac)}0201060909${Buffer.from('AirTag-9').toString('hex')}`;
+    const bare = analyzeHunt('bare', parseCsv(csv([seen(0, tag, AD_PUBLIC(tag), 42.7, -73.8), seen(1, tag, AD_PUBLIC(tag), 42.7002, -73.8)])));
+    const named = analyzeHunt('named', parseCsv(csv([seen(0, tag, AD_NAMED(tag), 42.7001, -73.8), seen(1, tag, AD_NAMED(tag), 42.7002, -73.8)])));
+    const beacon = analyzeHunt('beacon', parseCsv(csv([seen(0, tag, AD_FINDMY(tag), 42.7002, -73.8)])));
+    for (const order of [
+      [bare, named, beacon],
+      [beacon, named, bare],
+    ]) {
+      const [d] = combineHunts(order);
+      expect(d.n).toBe(5);
+      expect(d.cls!.companyIds).toContain(0x4c); // Apple, from one hunt only
+      expect(d.cls!.name).toBe('AirTag-9'); // local name, from another hunt only
+    }
+  });
 });
 
 describe('findUnusual', () => {

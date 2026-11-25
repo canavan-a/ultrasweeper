@@ -1,8 +1,12 @@
 export const NOTE_MAX = 500;
 
-// One-line preview of a flag note for list rows; empty when there is none.
-export function noteLabel(note: string | undefined): string {
-  const first = (note || '').replace(/\s+/g, ' ').trim();
-  if (!first) return '';
-  return first.length > 80 ? first.slice(0, 79) + '…' : first;
+// cut at code points, not UTF-16 units, so an emoji is never sliced in half
+function cut(s: string, n: number): string {
+  const chars = Array.from(s);
+  return chars.length <= n ? s : chars.slice(0, n).join('');
+}
+
+/** store-time cap for note fields */
+export function capNote(note: string): string {
+  return cut(note, NOTE_MAX);
 }

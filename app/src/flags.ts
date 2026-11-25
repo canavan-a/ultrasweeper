@@ -10,7 +10,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {useEffect, useState} from 'react';
 
 import {hamming, macToBytes} from './devices';
-import {NOTE_MAX, noteLabel} from './note';
+import {capNote} from './note';
 import type {Classification} from './lookup/adparse';
 
 export type MatcherKind = 'mac' | 'name' | 'company' | 'service' | 'eddy_uid' | 'oui';
@@ -187,22 +187,15 @@ export function pickLocalRecord(matched: MatchedFlag[], mac: string): FlagRecord
 }
 
 /**
- * The one-line description to show for a matched device: the note on the
- * flagged on-phone record first, then a flagged server record's. Unflagged
- * (disabled) records never describe the device. '' when nothing matches or
- * none of them has a note.
+ * Full note text for every flagged record that matched, on-phone records
+ * first: the description shown when the device is picked open. Unflagged
+ * (disabled) records never describe the device.
  */
-export function matchedNote(matched: MatchedFlag[]): string {
+export function matchedNotes(matched: MatchedFlag[]): string[] {
   const ordered = matched
     .filter(m => m.record.flag)
     .sort((a, b) => (a.source === b.source ? 0 : a.source === 'local' ? -1 : 1));
-  for (const m of ordered) {
-    const label = noteLabel(m.record.note);
-    if (label) {
-      return label;
-    }
-  }
-  return '';
+  return ordered.map(m => m.record.note).filter(n => n && n.trim()).map(n => n.trim());
 }
 
 export type ScanFilter = 'all' | 'police' | 'flagged';
@@ -284,7 +277,7 @@ export function parseRecord(raw: unknown): FlagRecord | null {
   // the wire says updated_at; the on-phone cache stores updatedAt
   const updatedAt =
     typeof r.updated_at === 'string' ? r.updated_at : typeof r.updatedAt === 'string' ? r.updatedAt : undefined;
-  return {id: r.id, flag: r.flag, note: r.note, matchers, updatedAt};
+  return {id: r.id, flag: r.flag, note: capNote(r.note), matchers, updatedAt};
 }
 
 /** merge a pull into stored records: server set replaces wholesale, local kept */
@@ -431,7 +424,7 @@ export async function setLocalNote(
   const rec: FlagRecord = {
     id: localFlagId(mac),
     flag: true,
-    note: note.slice(0, NOTE_MAX),
+    note: capNote(note),
     matchers: autoMatchers(cls, mac),
     updatedAt: new Date().toISOString(),
   };
@@ -455,7 +448,7 @@ export async function setLocalFlagById(id: string, flag: boolean): Promise<void>
 export async function setLocalNoteById(id: string, note: string): Promise<void> {
   await load();
   const existing = current.local.find(r => r.id === id);
-  const capped = note.slice(0, NOTE_MAX);
+  const capped = capNote(note);
   if (!existing || existing.note === capped) {
     return; // unchanged (e.g. submit + end-editing both fired): no write
   }

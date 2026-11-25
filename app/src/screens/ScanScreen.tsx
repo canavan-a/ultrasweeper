@@ -16,6 +16,7 @@ import {
   useFlagsSnapshot,
 } from '../flags';
 import type {MatchedFlag, MatchOptions} from '../flags';
+import {NOTE_MAX} from '../note';
 import {describeRelative, Fix, formatFix} from '../geo';
 import {formatBytes} from '../huntlog';
 import {STALE_MS} from '../location';
@@ -442,6 +443,7 @@ function DeviceRow({
           style={styles.noteInput}
           value={note}
           onChangeText={setNote}
+          maxLength={NOTE_MAX}
           placeholder="note for this flag…"
           placeholderTextColor={theme.textMuted}
           // return blurs a single-line input, so end-editing covers submit

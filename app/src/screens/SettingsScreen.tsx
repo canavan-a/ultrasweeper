@@ -24,6 +24,7 @@ import {
   useFlagsSnapshot,
 } from '../flags';
 import type {FlagRecord} from '../flags';
+import {NOTE_MAX} from '../note';
 import {requestNotificationPermission} from '../notifications';
 import {settingsStore, Settings} from '../settings';
 import {THEME_OPTIONS, ThemeName, useTheme} from '../theme';
@@ -382,6 +383,7 @@ function FlagRow({rec, isLocal}: {rec: FlagRecord; isLocal: boolean}): React.JSX
           style={styles.input}
           value={note}
           onChangeText={setNote}
+          maxLength={NOTE_MAX}
           placeholder="note…"
           placeholderTextColor={theme.textMuted}
           // return blurs a single-line input, so end-editing covers submit

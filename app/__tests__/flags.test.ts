@@ -8,13 +8,13 @@ import {
   effectiveScanFilter,
   matchDevice,
   matchFlag,
-  matchedNote,
+  matchedNotes,
   mergeServerRecords,
   parseRecord,
   pickLocalRecord,
   uploadUrl,
 } from '../src/flags';
-import {NOTE_MAX, noteLabel} from '../src/note';
+import {capNote, NOTE_MAX} from '../src/note';
 import type {Classification} from '../src/lookup/adparse';
 
 function cls(over: Partial<Classification> = {}): Classification {
@@ -427,43 +427,8 @@ function asyncStorageOf(m: any) {
   return m.default ?? m;
 }
 
-describe('matchedNote (the description shown for a matched device)', () => {
-  const m1: FlagRecord['matchers'][number] = {kind: 'mac', value: 'AA:BB:CC:DD:EE:01'};
-  const noted = (id: string, note: string, flag = true): FlagRecord => ({id, flag, note, matchers: [m1]});
-  const snap = (server: FlagRecord[], local: FlagRecord[]): FlagsSnapshot => ({revision: 0, pulledAt: null, server, local});
-
-  it('prefers the on-phone record, and only flagged records describe', () => {
-    const s = snap(
-      [noted('s1', 'server note')],
-      [noted(localFlagIdOf('AA:BB:CC:DD:EE:01'), 'my note'), noted('l2', 'disabled record', false)],
-    );
-    expect(matchedNote(matchDevice(s, cls(), 'AA:BB:CC:DD:EE:01'))).toBe('my note');
-  });
-
-  it('falls back to the server note when no local record has one', () => {
-    const s = snap([noted('s1', 'server note')], [noted(localFlagIdOf('AA:BB:CC:DD:EE:01'), '')]);
-    expect(matchedNote(matchDevice(s, cls(), 'AA:BB:CC:DD:EE:01'))).toBe('server note');
-  });
-
-  it('a disabled record never describes the device', () => {
-    const s = snap([noted('s1', 'server note', false)], []);
-    expect(matchedNote(matchDevice(s, cls(), 'AA:BB:CC:DD:EE:01'))).toBe('');
-  });
-
-  it('empty when nothing matches or no note is set', () => {
-    expect(matchedNote([])).toBe('');
-    const s = snap([noted('s1', '')], []);
-    expect(matchedNote(matchDevice(s, cls(), 'AA:BB:CC:DD:EE:01'))).toBe('');
-  });
-
-  it('flattens newlines and truncates for a one-line row', () => {
-    expect(noteLabel('  first line\nsecond one  ')).toBe('first line second one');
-    const long = noteLabel('x'.repeat(200));
-    expect(long).toHaveLength(80);
-    expect(long.endsWith('…')).toBe(true);
-  });
-
-  it('notes are capped at NOTE_MAX when stored', async () => {
+describe('note caps (notes are stored within NOTE_MAX)', () => {
+  it('a local note is capped when stored', async () => {
     let m!: typeof import('../src/flags');
     jest.isolateModules(() => {
       m = require('../src/flags');
@@ -472,5 +437,45 @@ describe('matchedNote (the description shown for a matched device)', () => {
     const id = m.localFlagId('AA:BB:CC:DD:EE:09');
     await m.setLocalNoteById(id, 'y'.repeat(NOTE_MAX + 100));
     expect(m.flagsStore.get().local[0].note).toHaveLength(NOTE_MAX);
+  });
+});
+
+describe('matchedNotes (the full description shown for a picked device)', () => {
+  const m1: FlagRecord['matchers'][number] = {kind: 'mac', value: 'AA:BB:CC:DD:EE:01'};
+  const m2: FlagRecord['matchers'][number] = {kind: 'name', value: 'badge'};
+  const rec = (id: string, note: string, matchers = [m1], flag = true): FlagRecord => ({id, flag, note, matchers});
+  const snap = (server: FlagRecord[], local: FlagRecord[]): FlagsSnapshot => ({revision: 0, pulledAt: null, server, local});
+
+  it('returns every flagged record\'s full note, on-phone records first', () => {
+    const s = snap(
+      [rec('s1', 'server says: the long-battery tag in the hall, with details')],
+      [rec('local-aabbccddeeff01', 'my own note\nwith a second line', [m1, m2])],
+    );
+    expect(matchedNotes(matchDevice(s, cls({name: 'badge'}), 'AA:BB:CC:DD:EE:01'))).toEqual([
+      'my own note\nwith a second line',
+      'server says: the long-battery tag in the hall, with details',
+    ]);
+  });
+
+  it('skips unflagged records and empty notes', () => {
+    const s = snap([rec('s1', '  ', [m1]), rec('s2', 'off', [m1], false)], []);
+    expect(matchedNotes(matchDevice(s, cls(), 'AA:BB:CC:DD:EE:01'))).toEqual([]);
+  });
+
+  it('a server note longer than the cap arrives capped', () => {
+    const parsed = parseRecord({
+      id: 's1',
+      flag: true,
+      note: 'y'.repeat(NOTE_MAX + 50),
+      matchers: [{kind: 'mac', value: 'AA:BB:CC:DD:EE:01'}],
+      updated_at: '2026-11-24T00:00:00Z',
+    })!;
+    expect(parsed.note).toBe('y'.repeat(NOTE_MAX));
+  });
+
+  it('capNote counts code points, never splitting an emoji in half', () => {
+    const capped = capNote('🏷'.repeat(NOTE_MAX + 5));
+    expect(Array.from(capped)).toHaveLength(NOTE_MAX);
+    expect(capped).toBe('🏷'.repeat(NOTE_MAX));
   });
 });

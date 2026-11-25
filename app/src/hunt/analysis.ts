@@ -233,6 +233,28 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
 
 // --- several hunts -> one device list -------------------------------------
 
+// combine two re-classifications of the same MAC: a name, company, service
+// or Eddystone UID only present in one hunt's payloads still matches.
+function mergeCls(a: Classification, b: Classification): Classification {
+  const uniq = (x: string[]) => [...new Set(x)];
+  const msd = new Map<number, string[]>();
+  for (const m of [...a.manufacturerData, ...b.manufacturerData]) {
+    msd.set(m.company, uniq([...(msd.get(m.company) ?? []), m.data]));
+  }
+  return {
+    ...a,
+    labels: uniq([...a.labels, ...b.labels]),
+    name: a.name ?? b.name,
+    vendor: a.vendor ?? b.vendor,
+    companyIds: [...new Set([...a.companyIds, ...b.companyIds])],
+    manufacturerData: [...msd.entries()].flatMap(([company, data]) => data.map(d => ({company, data: d}))),
+    serviceUuids: uniq([...a.serviceUuids, ...b.serviceUuids]),
+    serviceUuids128: uniq([...a.serviceUuids128, ...b.serviceUuids128]),
+    eddystoneUids: uniq([...a.eddystoneUids, ...b.eddystoneUids]),
+    randomAddress: a.randomAddress || b.randomAddress,
+  };
+}
+
 export interface MapDevice {
   mac: string;
   name: string;
@@ -262,7 +284,7 @@ export function combineHunts(hunts: Hunt[]): MapDevice[] {
       x.vendor ||= d.vendor;
       x.kind ||= d.kind;
       x.police ||= d.police;
-      x.cls ||= d.cls;
+      x.cls = x.cls ? (d.cls ? mergeCls(x.cls, d.cls) : x.cls) : d.cls;
       x.n += d.n;
       x.hunts.push(h.name);
       for (const s of d.sightings) {
