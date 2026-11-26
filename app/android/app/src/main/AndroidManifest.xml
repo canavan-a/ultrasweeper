@@ -21,6 +21,19 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- GATT probe (src/gatt.ts, GattProbeModule.kt): the phone's own BLE
+         central briefly connects to one connectable advertiser to read its
+         GATT table. Android 12+ runtime "Nearby devices"; below 12 BLE
+         rides on location, which hunts already hold. required=false: the
+         nRF24 rig works without the phone's radio, the app only loses
+         probing where there is no BLE. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="false" />
     <!-- USB permission itself is granted per-device by the system dialog at
          open() time (see UsbSerialModule.kt); these two declare that the app
          is a USB host at all. "required=false" keeps the APK installable on

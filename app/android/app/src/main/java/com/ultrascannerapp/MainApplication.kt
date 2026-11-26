@@ -22,6 +22,7 @@ class MainApplication : Application(), ReactApplication {
               add(AppIconPackage())
               add(LocationPackage())
               add(HuntLogPackage())
+              add(GattProbePackage())
             }
 
         override fun getJSMainModuleName(): String = "index"

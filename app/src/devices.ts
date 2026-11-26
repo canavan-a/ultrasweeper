@@ -11,6 +11,7 @@
 // foldableInto() recognizes those and attributes the sighting to the
 // original device instead of showing a twin.
 
+import {advOpcode} from './lookup/adparse';
 import type {Fix} from './geo';
 import type {MacRecord} from './protocol';
 
@@ -45,6 +46,33 @@ export interface DeviceEntry {
    * the most recent "strong" sighting.
    */
   bestFix: Fix | null;
+  /**
+   * ADV opcodes seen in this device's PDU headers (advOpcode → count).
+   * Connectable or shout-only is a property of the device, so the vote
+   * settles it despite header bits flipping in the air; see advCapability.
+   */
+  advVotes: Map<number, number>;
+}
+
+/**
+ * What the header votes say about carrying a GATT connection:
+ * 'connectable' (ADV_IND) — a probe can talk to it;
+ * 'beacon-only' (ADV_NONCONN/ADV_SCAN_IND) — never answers, by design;
+ * 'unknown' — too few (or contradictory) votes to claim either.
+ * A device's kind doesn't change over a session, so requiring three
+ * agreeing sightings and a 2:1 margin only delays the label, never
+ * mislabels a settled device.
+ */
+export function advCapability(votes: ReadonlyMap<number, number>): 'connectable' | 'beacon-only' | 'unknown' {
+  let conn = 0;
+  let shout = 0;
+  for (const [op, n] of votes) {
+    if (op === 0) conn += n;
+    else if (op === 2 || op === 3) shout += n;
+  }
+  if (conn >= 3 && conn >= shout * 2) return 'connectable';
+  if (shout >= 3 && shout >= conn * 2) return 'beacon-only';
+  return 'unknown';
 }
 
 const CRC_RANK: Record<MacRecord['crc'], number> = {'1': 3, P: 2, S: 1};
@@ -114,6 +142,8 @@ export function foldableInto(
 function noteSighting(e: DeviceEntry, rec: MacRecord, fix: Fix | null): void {
   e.lastPwr = rec.pwr;
   e.lastCh = rec.ch;
+  const op = advOpcode(rec.ad);
+  if (op !== null) e.advVotes.set(op, (e.advVotes.get(op) ?? 0) + 1);
   if (!fix) return;
   if (!e.firstFix) e.firstFix = fix;
   e.lastFix = fix;
@@ -163,7 +193,10 @@ export class DeviceTable {
         firstFix: fix,
         lastFix: fix,
         bestFix: fix,
+        advVotes: new Map(),
       };
+      const op = advOpcode(rec.ad);
+      if (op !== null) entry.advVotes.set(op, 1);
       this.entries.set(rec.mac, entry);
       return;
     }

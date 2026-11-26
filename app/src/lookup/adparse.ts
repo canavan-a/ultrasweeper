@@ -144,6 +144,24 @@ function ascii(hex: string): string {
 }
 
 /**
+ * The legacy ADV opcode from the captured PDU header — the low nibble of
+ * the first header byte, where the nRF24 shim leaves it after swapbits
+ * (the same position firmware/src/main.cpp filters PDUs on). This is the
+ * device saying, in the protocol itself, whether it can carry a GATT
+ * connection: 0 = ADV_IND (connectable), 2 = ADV_NONCONN_IND (shouts
+ * only), 3 = ADV_SCAN_IND (scannable, still never connectable). 1 is
+ * ADV_DIRECT_IND, a paging artifact — treated as unknown.
+ *
+ * Header bytes ride through CRC:S rows unchecked, so one sighting proves
+ * little; vote across them (devices.ts advCapability).
+ */
+export function advOpcode(adHex: string): number | null {
+  if (adHex.length < 2) return null;
+  const op = parseInt(adHex.slice(0, 2), 16) & 0x0f;
+  return op === 0 || op === 2 || op === 3 ? op : null;
+}
+
+/**
  * Classify one sighting from its AD payload alone. Confidence comes from
  * explicit fields first (local names, manufacturer data company IDs),
  * then SIG-assigned service UUIDs, then address-block OUI.

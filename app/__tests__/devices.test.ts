@@ -2,7 +2,7 @@
 // real bench twin `86:69:93:F8:12:6F` / `86:69:B3:F8:12:6F` from the M1
 // capture — same payload one bit-flipped in flight, both accepted as
 // CRC:S.
-import {DeviceTable, foldableInto, hamming, macToBytes} from '../src/devices';
+import {advCapability, DeviceTable, foldableInto, hamming, macToBytes} from '../src/devices';
 import {MacRecord} from '../src/protocol';
 
 const AD_BASE =
@@ -101,5 +101,45 @@ describe('DeviceTable pruning', () => {
     t.apply(rec('22:22:22:22:22:22', AD_BASE.replace('E7', '17')), 1000, false);
     t.pruneOlderThan(100_000, 60_000, new Set(['22:22:22:22:22:22']));
     expect(t.snapshot().map(d => d.mac)).toEqual(['22:22:22:22:22:22']);
+  });
+});
+
+describe('advCapability', () => {
+  const votes = (entries: [number, number][]) => new Map(entries);
+
+  it('needs three agreeing votes with a 2:1 margin to claim either way', () => {
+    expect(advCapability(new Map())).toBe('unknown');
+    expect(advCapability(votes([[0, 2]]))).toBe('unknown'); // not enough votes
+    expect(advCapability(votes([[0, 3], [2, 2]]))).toBe('unknown'); // 3:2, under the margin
+    expect(advCapability(votes([[0, 4], [2, 2]]))).toBe('connectable');
+    expect(advCapability(votes([[2, 3]]))).toBe('beacon-only');
+    expect(advCapability(votes([[3, 4], [0, 1]]))).toBe('beacon-only'); // scan-only counts as shout
+  });
+
+  it('ignores unvotable opcodes', () => {
+    expect(advCapability(votes([[0, 5], [1, 40]]))).toBe('connectable'); // ADV_DIRECT is a paging artifact
+  });
+});
+
+describe('DeviceTable header votes', () => {
+  it('votes the ADV opcode across sightings', () => {
+    const t = new DeviceTable();
+    const mac = '40:44:4D:12:34:56';
+    // AD_BASE's header byte is 0x00: ADV_IND
+    for (let i = 0; i < 3; i++) t.apply(rec(mac, AD_BASE), 1000 + i * 100, false);
+    const [d] = t.snapshot();
+    expect(d.advVotes.get(0)).toBe(3);
+    expect(advCapability(d.advVotes)).toBe('connectable');
+  });
+
+  it('a glitched header flips one vote, the consensus still holds', () => {
+    const t = new DeviceTable();
+    const mac = '40:44:4D:12:34:56';
+    for (let i = 0; i < 3; i++) t.apply(rec(mac, AD_BASE), 1000 + i * 100, false);
+    // one air-glitched header: 0x00 -> 0x06, nibble 6, not an ADV opcode
+    t.apply(rec(mac, '06' + AD_BASE.slice(2)), 1400, false);
+    const [d] = t.snapshot();
+    expect(d.sightings).toBe(4);
+    expect(advCapability(d.advVotes)).toBe('connectable');
   });
 });

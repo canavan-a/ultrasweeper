@@ -1,5 +1,5 @@
 // Classification against the same real bench blobs the protocol tests use.
-import {classify, parsePdu} from '../src/lookup/adparse';
+import {advOpcode, classify, parsePdu} from '../src/lookup/adparse';
 
 // Real M1 bench captures (see __tests__/protocol.test.ts for provenance).
 const APPLE_BLOB = '42211D0C3F9DEF7002011A17FF4C008908B322C0A803271B18160800EA798AA0';
@@ -20,6 +20,28 @@ describe('parsePdu', () => {
 
   it('returns null for too-short input', () => {
     expect(parsePdu('001122')).toBeNull();
+  });
+});
+
+describe('advOpcode', () => {
+  // Ground truth from the wardriving corpus: shout-only broadcasters
+  // (iBeacon, Eddystone, Apple, Microsoft) vote 2; connectable consumer
+  // devices (Govee, Furbo, Tuya, SP6, Axon) vote 0. The real blobs above
+  // are those two families.
+  it('reads shout-only (2) from iBeacon/Apple-style headers', () => {
+    expect(advOpcode(IBEACON_BLOB)).toBe(2);
+    expect(advOpcode(APPLE_BLOB)).toBe(2);
+    expect(advOpcode(MSVP_BLOB)).toBe(2);
+  });
+
+  it('reads connectable (0) from a connectable advertiser', () => {
+    expect(advOpcode(FD7F_BLOB)).toBe(0);
+  });
+
+  it('returns null for a header whose nibble is not an ADV opcode', () => {
+    expect(advOpcode(NAME_BLOB)).toBeNull(); // 0x44 -> nibble 4: a glitched header
+    expect(advOpcode('')).toBeNull();
+    expect(advOpcode('0')).toBeNull();
   });
 });
 

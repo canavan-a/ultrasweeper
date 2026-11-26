@@ -6,6 +6,7 @@ import {FlatList, Pressable, StyleSheet, Text, TextInput, View} from 'react-nati
 
 import {formatAgo} from '../ago';
 import {Icon} from '../components/Icon';
+import {advCapability} from '../devices';
 import type {ScanEngine, ViewDevice} from '../engine';
 import {
   effectiveScanFilter,
@@ -16,6 +17,13 @@ import {
   useFlagsSnapshot,
 } from '../flags';
 import type {MatchedFlag, MatchOptions} from '../flags';
+import {
+  ensureBlePermissions,
+  gattProbeErrorText,
+  ProbeSummary,
+  probeDeviceGatt,
+  summarizeProbe,
+} from '../gatt';
 import {NOTE_MAX} from '../note';
 import {describeRelative, Fix, formatFix} from '../geo';
 import {formatBytes} from '../huntlog';
@@ -377,6 +385,13 @@ function DeviceRow({
   if (item.glitchSightings > 0) {
     chips.push(`+${item.glitchSightings} glitch`);
   }
+  // what the header votes say about answering a GATT connection (devices.ts)
+  const capability = advCapability(item.advVotes);
+  if (capability === 'connectable') {
+    chips.push('connectable');
+  } else if (capability === 'beacon-only') {
+    chips.push('shout-only');
+  }
   const sub = [cls.vendor, ...cls.labels.filter(l => !cls.vendor || !l.startsWith(cls.vendor))]
     .filter(Boolean)
     .join(' · ');
@@ -395,6 +410,33 @@ function DeviceRow({
   const age = now - item.lastSeen;
   // fresh: heard within the last few batches; stale: probably gone
   const ageStyle = age < 10_000 ? styles.ageFresh : age < 60_000 ? styles.ageRecent : styles.ageStale;
+  // GATT probe (src/gatt.ts): asked per-device, one at a time; the result
+  // belongs to this device, so the state lives on the row, not the screen.
+  const [probe, setProbe] = useState<ProbeState>({phase: 'idle'});
+  const runProbe = async (): Promise<void> => {
+    if (capability === 'beacon-only') {
+      // its own ad header already said no; don't burn the radio budget
+      setProbe({phase: 'result', summary: null, note: 'its ad header says shouts-only — it never answers a connection'});
+      return;
+    }
+    setProbe({phase: 'running'});
+    if (!(await ensureBlePermissions())) {
+      setProbe({phase: 'error', text: gattProbeErrorText('no-permission')});
+      return;
+    }
+    try {
+      const res = await probeDeviceGatt(item.mac);
+      setProbe({
+        phase: 'result',
+        summary: summarizeProbe(res),
+        note: res.truncated ? 'out of read budget — this table may be longer' : null,
+      });
+    } catch (e) {
+      // the native side rejects with fixed codes (GattProbeModule.kt)
+      const code = typeof e === 'object' && e !== null && 'code' in e ? String((e as {code?: unknown}).code ?? '') : '';
+      setProbe({phase: 'error', text: gattProbeErrorText(code || 'probe failed')});
+    }
+  };
   return (
     <View
       style={[
@@ -424,6 +466,12 @@ function DeviceRow({
           {title}
         </Text>
         <Text style={styles.count}>{item.sightings}×</Text>
+        <ProbeButton
+          mac={item.mac}
+          capability={capability}
+          running={probe.phase === 'running'}
+          onPress={() => void runProbe()}
+        />
         <FlagButton mac={item.mac} cls={cls} active={!!localRecord?.flag} matchOpts={matchOpts} />
         <PinButton mac={item.mac} pinned={pinned} />
       </View>
@@ -466,7 +514,68 @@ function DeviceRow({
           </Text>
         ))}
       </View>
+      {probe.phase === 'running' ? <Text style={styles.probeNote}>probing — finding it, connecting, reading…</Text> : null}
+      {probe.phase === 'error' ? <Text style={[styles.probeNote, styles.probeError]}>{probe.text}</Text> : null}
+      {probe.phase === 'result' ? (
+        <View style={styles.probeBlock}>
+          {probe.summary
+            ? [
+                ...probe.summary.identity.map(i => (
+                  <Text key={`i-${i.label}`} style={styles.probeIdentity}>
+                    {i.label}: {i.value}
+                  </Text>
+                )),
+                probe.summary.serviceNames.length ? (
+                  <Text style={styles.probeNote}>{probe.summary.serviceNames.join(' · ')}</Text>
+                ) : null,
+                !probe.summary.identity.length && !probe.summary.serviceNames.length ? (
+                  <Text style={styles.probeNote}>answered, but published no readable GATT table</Text>
+                ) : null,
+              ]
+            : null}
+          {probe.note ? <Text style={styles.probeNote}>{probe.note}</Text> : null}
+        </View>
+      ) : null}
     </View>
+  );
+}
+
+/** Per-row GATT probe state; see runProbe in DeviceRow. */
+type ProbeState =
+  | {phase: 'idle'}
+  | {phase: 'running'}
+  | {phase: 'error'; text: string}
+  | {phase: 'result'; summary: ProbeSummary | null; note: string | null};
+
+/**
+ * Ask one connectable device what it is (src/gatt.ts). Dimmed when the
+ * header votes already say beacon-only — the press still explains itself.
+ */
+function ProbeButton({
+  mac,
+  capability,
+  running,
+  onPress,
+}: {
+  mac: string;
+  capability: 'connectable' | 'beacon-only' | 'unknown';
+  running: boolean;
+  onPress: () => void;
+}): React.JSX.Element {
+  const theme = useTheme();
+  const styles = makeStyles(theme);
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={10}
+      disabled={running}
+      style={styles.pinButton}
+      accessibilityRole="button"
+      accessibilityLabel={
+        capability === 'beacon-only' ? `Probe ${mac} — shouts only` : `Probe ${mac} over GATT`
+      }>
+      <Icon name="scan-line" size={16} color={running ? theme.primary : theme.textMuted} />
+    </Pressable>
   );
 }
 
@@ -568,5 +677,10 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
     error: {fontSize: 12, color: theme.danger, marginTop: 4},
     warn: {fontSize: 12, color: theme.danger},
     where: {fontSize: 12, color: theme.text, marginTop: 4},
+    // GATT probe results: identity labels are the payload, the rest is context
+    probeBlock: {marginTop: 6, gap: 2},
+    probeNote: {fontSize: 12, color: theme.textMuted, marginTop: 4},
+    probeError: {color: theme.danger},
+    probeIdentity: {fontSize: 12, fontFamily: 'monospace', color: theme.text},
   });
 }
