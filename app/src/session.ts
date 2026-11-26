@@ -38,6 +38,7 @@ import {
   HuntLogStatus,
   huntLogStatus,
   logFix,
+  logPoliceReport,
   logSession,
   logSighting,
   onHuntLog,
@@ -403,6 +404,34 @@ export function clear(): void {
   clsCache.clear();
   resetPoliceAlerts();
   rebuildView();
+}
+
+/**
+ * REPORT POLICE (ScanScreen police tab): the hunter saw police but the
+ * radio heard nothing matching. Record it as a `report` row in the hunt
+ * CSV — a time + position anchor. The analysis layer looks for devices
+ * heard within a few hundred metres of these and a minute either side:
+ * anything that recurs across reports is a police signature we have not
+ * written yet.
+ */
+export interface PoliceReport {
+  t: number;
+  lat: number | null;
+  lon: number | null;
+  /** false when no hunt is recording: the report cannot be kept */
+  logged: boolean;
+}
+
+export function reportPolice(note = 'police sighted, no BLE match'): PoliceReport {
+  const now = Date.now();
+  const fix = lastFix();
+  logPoliceReport(fix, note, now);
+  return {
+    t: now,
+    lat: fix ? fix.lat : null,
+    lon: fix ? fix.lon : null,
+    logged: huntLogStatus().name != null,
+  };
 }
 
 export function subscribe(listener: Listener): () => void {

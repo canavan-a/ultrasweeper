@@ -69,6 +69,16 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
   const matchOpts: MatchOptions = {glitchTolerant: mergeGlitches};
   const now = useNow(1000);
   const chooseFilter = (f: Settings['scanFilter']) => settingsStore.save({...settingsStore.get(), scanFilter: f});
+  // REPORT POLICE: ground truth the radio missed. The reply says plainly
+  // what was kept: a hunt row (with or without a fix), or nothing.
+  const [reportMsg, setReportMsg] = useState<string | null>(null);
+  const reportPolice = () => {
+    const r = engine.reportPolice();
+    const when = new Date(r.t).toLocaleTimeString();
+    if (!r.logged) setReportMsg(`Reported at ${when} but nothing was kept — turn on hunt recording in Settings.`);
+    else if (r.lat == null || r.lon == null) setReportMsg(`Reported at ${when} — no phone fix, recorded time only.`);
+    else setReportMsg(`Reported at ${when}, ${r.lat.toFixed(5)}, ${r.lon.toFixed(5)} — it gets a "?" on the map.`);
+  };
 
   if (!engine.available) {
     // iOS or a dev build without the native module — say so plainly rather
@@ -186,6 +196,23 @@ export function ScanScreen({engine}: {engine: ScanEngine}): React.JSX.Element {
           </Pressable>
         ))}
       </View>
+
+      {filter === 'police' ? (
+        <View style={styles.reportBox}>
+          <Pressable
+            style={[styles.button, styles.dangerButton, styles.reportButton]}
+            onPress={reportPolice}
+            accessibilityRole="button"
+            accessibilityLabel="Report a police sighting the scanner did not hear">
+            <Text style={[styles.buttonText, styles.dangerButtonText, styles.reportButtonText]}>REPORT POLICE</Text>
+          </Pressable>
+          <Text style={styles.muted}>
+            Saw police but nothing matched? Report it anyway: it gets a big &quot;?&quot; pin on the map,
+            and the analysis layer looks for devices heard nearby that we have not learned to detect yet.
+          </Text>
+          {reportMsg ? <Text style={styles.reportOk}>{reportMsg}</Text> : null}
+        </View>
+      ) : null}
 
       <FlatList
         data={items}
@@ -682,5 +709,11 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
     probeNote: {fontSize: 12, color: theme.textMuted, marginTop: 4},
     probeError: {color: theme.danger},
     probeIdentity: {fontSize: 12, fontFamily: 'monospace', color: theme.text},
+    // REPORT POLICE on the police tab: a full-width button (this is tapped
+    // while walking), its explanation, and the plain-language reply
+    reportBox: {gap: 6, marginBottom: 10},
+    reportButton: {alignSelf: 'stretch', alignItems: 'center', paddingVertical: 12},
+    reportButtonText: {fontSize: 15},
+    reportOk: {fontSize: 12, color: theme.danger, fontWeight: '600'},
   });
 }

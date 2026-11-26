@@ -70,6 +70,20 @@ describe('analyzeHunt', () => {
     const late = [...rows.filter(r => r.mac !== shard), seen(600, shard, AD_PUBLIC(shard))];
     expect(analyzeHunt('x', parseCsv(csv(late))).merged).toBe(0);
   });
+
+  test('keeps REPORT POLICE rows as report anchors', () => {
+    const withReports = [
+      ...rows,
+      {unix_ms: BASE + 20_000, kind: 'report', police: 'user', note: 'squad car at the park', lat: 42.700123, lon: -73.800456, acc_m: '8.0'},
+      {unix_ms: BASE + 30_000, kind: 'report', note: 'no fix at the time'},
+    ];
+    const h = analyzeHunt('x', parseCsv(csv(withReports)));
+    expect(h.devices.map(d => d.mac)).toContain(loud); // reports are not devices
+    expect(h.reports).toEqual([
+      {t: BASE + 20_000, lat: 42.700123, lon: -73.800456, note: 'squad car at the park'},
+      {t: BASE + 30_000, lat: null, lon: null, note: 'no fix at the time'},
+    ]);
+  });
 });
 
 describe('combineHunts / estimate', () => {

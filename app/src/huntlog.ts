@@ -235,6 +235,25 @@ export function endHuntLog(now = Date.now()): void {
   enqueue(() => Native.close()).catch(() => {});
 }
 
+/**
+ * A REPORT POLICE sighting (ScanScreen police tab): the hunter saw police
+ * but the radio matched nothing. The row is a time/position anchor — the
+ * analysis layer looks for devices heard near it as candidate signatures.
+ * Dropped silently when no hunt is recording (same as every other row).
+ */
+export function logPoliceReport(fix: Fix | null, note: string, now = Date.now()): void {
+  push({
+    time: localIso(now),
+    unix_ms: now,
+    kind: 'report',
+    police: 'user',
+    confidence: 'sighted',
+    reasons: 'reported by eye',
+    note,
+    ...fixFields(fix, now),
+  });
+}
+
 export function huntLogStatus(): HuntLogStatus {
   return status;
 }

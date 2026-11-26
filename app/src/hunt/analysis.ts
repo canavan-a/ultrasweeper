@@ -75,10 +75,24 @@ export interface HuntDevice {
   sightings: Sighting[];
 }
 
+/**
+ * A REPORT POLICE sighting (ScanScreen police tab): the hunter saw police
+ * at this time and place while the radio matched nothing. Devices heard
+ * nearby at that moment are candidate police signatures — these anchors
+ * are how new detectable signals get found.
+ */
+export interface HuntReport {
+  t: number;
+  lat: number | null;
+  lon: number | null;
+  note: string;
+}
+
 export interface Hunt {
   name: string;
   fixes: HuntFix[];
   devices: HuntDevice[];
+  reports: HuntReport[];
   rawMacs: number;
   merged: number;
 }
@@ -162,6 +176,7 @@ export interface AnalyzeOptions {
 export function analyzeHunt(name: string, rows: Record<string, string>[], opts: AnalyzeOptions = {}): Hunt {
   const {merge = true, maxBits = 2, ratio = 4, windowMs = 15000} = opts;
   const fixes: HuntFix[] = [];
+  const reports: HuntReport[] = [];
   const byMac = new Map<string, Sighting[]>();
   for (const r of rows) {
     const t = Number(r.unix_ms);
@@ -169,6 +184,8 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
       const lat = num(r.lat);
       const lon = num(r.lon);
       if (lat != null && lon != null) fixes.push({t, lat, lon, speed: num(r.speed_mps)});
+    } else if (r.kind === 'report') {
+      reports.push({t, lat: num(r.lat), lon: num(r.lon), note: r.note ?? ''});
     } else if (r.kind === 'sighting' && r.mac) {
       const s: Sighting = {
         t,
@@ -347,7 +364,7 @@ export function analyzeHunt(name: string, rows: Record<string, string>[], opts: 
     })
     .sort((p, q) => q.n - p.n);
 
-  return {name, fixes, devices, rawMacs, merged: alias.size};
+  return {name, fixes, devices, reports, rawMacs, merged: alias.size};
 }
 
 // --- several hunts -> one device list -------------------------------------

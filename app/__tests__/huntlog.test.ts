@@ -126,4 +126,39 @@ describe('hunt log', () => {
     log.logFix({lat: 1, lon: 2, t: 0});
     expect(written.length).toBe(before);
   });
+
+  it('keeps a REPORT POLICE row with fix fields', async () => {
+    const t0 = new Date(2026, 10, 23, 22, 15, 4).getTime();
+    await log.startHuntLog(t0);
+    log.logPoliceReport(
+      {lat: 42.7012345, lon: -73.8005432, t: t0 + 50_000, acc: 8},
+      'squad car at the park',
+      t0 + 54_000,
+    );
+    log.logPoliceReport(null, 'heard sirens', t0 + 70_000); // no fix: time only
+    log.endHuntLog(t0 + 80_000);
+    await flushPromises();
+    const rows = parseCsv(written.join(''));
+    const header = rows[0];
+    const byCol = (r: string[]) => Object.fromEntries(header.map((h, i) => [h, r[i]]));
+    const reports = rows.slice(1).filter(r => r[2] === 'report').map(byCol);
+    expect(reports).toHaveLength(2);
+    expect(reports[0]).toMatchObject({
+      kind: 'report',
+      police: 'user',
+      confidence: 'sighted',
+      reasons: 'reported by eye',
+      note: 'squad car at the park',
+      lat: '42.7012345',
+      lon: '-73.8005432',
+    });
+    expect(Number(reports[0].unix_ms)).toBe(t0 + 54_000);
+    expect(Number(reports[0].fix_age_ms)).toBe(4000);
+    expect(reports[1].note).toBe('heard sirens');
+    expect(reports[1].lat).toBe('');
+    // after the hunt ends there is no file to write to; dropped like every other row
+    log.logPoliceReport(null, 'after the hunt', t0 + 90_000);
+    await flushPromises();
+    expect(parseCsv(written.join('')).filter(r => r[2] === 'report')).toHaveLength(2);
+  });
 });

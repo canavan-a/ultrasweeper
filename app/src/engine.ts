@@ -6,13 +6,14 @@ import {useSyncExternalStore} from 'react';
 import * as session from './session';
 import type {SessionSnapshot} from './session';
 
-export type {EngineState, ViewDevice} from './session';
+export type {EngineState, PoliceReport, ViewDevice} from './session';
 
 export interface ScanEngine extends SessionSnapshot {
   refreshUsb: () => void;
   connect: (deviceId: string) => void;
   disconnect: () => void;
   clear: () => void;
+  reportPolice: () => session.PoliceReport;
 }
 
 export function useScanEngine(): ScanEngine {
@@ -23,5 +24,6 @@ export function useScanEngine(): ScanEngine {
     connect: session.connect,
     disconnect: session.disconnect,
     clear: session.clear,
+    reportPolice: session.reportPolice,
   };
 }

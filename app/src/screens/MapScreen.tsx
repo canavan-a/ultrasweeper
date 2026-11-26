@@ -266,6 +266,21 @@ export function MapScreen(): React.JSX.Element {
           geometry: {type: 'Point', coordinates: [d.est.lon, d.est.lat]},
         })),
       } as GeoJSON.FeatureCollection,
+      // REPORT POLICE: the hunter saw police here and the radio heard
+      // nothing matching — big "?" pins, and candidate analysis anchors
+      // for devices heard at this moment
+      reports: {
+        type: 'FeatureCollection',
+        features: hunts.flatMap(h =>
+          (h.reports ?? [])
+            .filter(r => r.lat != null && r.lon != null)
+            .map(r => ({
+              type: 'Feature',
+              geometry: {type: 'Point', coordinates: [r.lon as number, r.lat as number]},
+              properties: {when: new Date(r.t).toLocaleTimeString(), note: r.note},
+            })),
+        ),
+      } as GeoJSON.FeatureCollection,
     };
   }, [visible, selected, showOthers, fan, colors, devices, hunts, flagged, ringTags, ringPolice]);
 
@@ -466,6 +481,23 @@ export function MapScreen(): React.JSX.Element {
                 textColor: theme.text,
                 textHaloColor: surface,
                 textHaloWidth: 1.6,
+              }}
+            />
+          </ShapeSource>
+          <ShapeSource id="reports" shape={shapes.reports}>
+            <CircleLayer
+              id="report-dot"
+              style={{circleRadius: 14, circleColor: 'rgba(229,72,77,0.20)', circleStrokeColor: POLICE_RED, circleStrokeWidth: 2.5}}
+            />
+            <SymbolLayer
+              id="report-mark"
+              style={{
+                textField: '?',
+                textFont: ['Noto Sans Bold'],
+                textSize: 15,
+                textColor: POLICE_RED,
+                textHaloColor: surface,
+                textHaloWidth: 2,
               }}
             />
           </ShapeSource>
