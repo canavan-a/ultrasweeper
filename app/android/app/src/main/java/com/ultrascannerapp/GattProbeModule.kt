@@ -102,7 +102,9 @@ class GattProbeModule(private val reactContext: ReactApplicationContext) :
         var readQueue: List<BluetoothGattCharacteristic> = emptyList()
         var readIndex = 0
         val services = Arguments.createArray()
-        val servicesByUuid = HashMap<String, com.facebook.react.bridge.WritableMap>()
+        // live references to each characteristic entry, so a finished read
+        // can fill in valueHex even after the entry is in `services`
+        val charsByUuid = HashMap<String, com.facebook.react.bridge.WritableMap>()
         var settled = false
         var finish: () -> Unit = {}
 
@@ -130,7 +132,7 @@ class GattProbeModule(private val reactContext: ReactApplicationContext) :
             }
             // Once the service tree is walked, a late read timeout is still
             // a useful answer: return what came back and say it stopped.
-            val resolved = status == "ok" || (status == "read-timeout" && servicesByUuid.isNotEmpty())
+            val resolved = status == "ok" || (status == "read-timeout" && services.size() > 0)
             if (resolved) {
                 val map = Arguments.createMap()
                 map.putString("address", target)
@@ -170,6 +172,7 @@ class GattProbeModule(private val reactContext: ReactApplicationContext) :
             // ScanFilter only matches the printed one anyway; match in the
             // callback like the hunt pipeline already does.
             scanner.startScan(
+                null,
                 ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(),
                 callback,
             )
@@ -253,13 +256,13 @@ class GattProbeModule(private val reactContext: ReactApplicationContext) :
                 cm2.putString("uuid", ch.uuid.toString())
                 cm2.putArray("properties", cm)
                 chars.pushMap(cm2)
+                s.charsByUuid[svc.uuid.toString() + "|" + ch.uuid.toString()] = cm2
                 if (ch.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0) {
                     s.readQueue += ch
                 }
             }
             map.putArray("characteristics", chars)
             s.services.pushMap(map)
-            s.servicesByUuid[svc.uuid.toString()] = map
         }
         // Device Information first: the identity labels are what a probe is
         // for, and the read budget should buy those before anything else.
@@ -289,16 +292,11 @@ class GattProbeModule(private val reactContext: ReactApplicationContext) :
     }
 
     private fun recordRead(s: ProbeState, ch: BluetoothGattCharacteristic, value: ByteArray) {
-        val svcMap = s.servicesByUuid[ch.service?.uuid?.toString() ?: return] ?: return
-        val chars = svcMap.getArray("characteristics") ?: return
-        // Match by uuid and attach the hex payload to that entry; the read
-        // order is ours, so linear scan over one service is fine.
-        for (i in 0 until chars.size()) {
-            val cm = chars.getMap(i) ?: continue
-            if (cm.getString("uuid") == ch.uuid.toString() && !cm.hasKey("valueHex")) {
-                cm.putString("valueHex", value.joinToString("") { b -> "%02X".format(b) })
-                return
-            }
-        }
+        val key = ch.service?.uuid.toString() + "|" + ch.uuid
+        val cm = s.charsByUuid[key] ?: return
+        // a second read of the same characteristic (shouldn't happen: the
+        // queue is built once) must not overwrite the first value
+        if (cm.hasKey("valueHex")) return
+        cm.putString("valueHex", value.joinToString("") { b -> "%02X".format(b) })
     }
 }
