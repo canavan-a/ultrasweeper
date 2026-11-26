@@ -3,9 +3,10 @@
 // A device's dots bunch along the stretch of road where it was in range;
 // tap a device (list or map) to isolate it and draw its estimated spot.
 // Tap empty map to clear. The camera moves when the picked hunts change and
-// when a device is picked from the list; never on a map tap. Held flag
-// records (src/flags.ts) mark matching devices with a red ring; the list
-// shows a flagged tag and, once picked, the flag's note.
+// when a device is picked from the list; never on a map tap. A red ring
+// marks a device: by default from held flag records (src/flags.ts, the
+// "Highlight tags" checkbox); "Highlight police" rings the police hits too.
+// The list shows a flagged tag and, once picked, the flag's note.
 //
 // Basemap: OpenFreeMap (positron / dark), as in ../super-atlas. Analysis:
 // src/hunt/ (shard folding, unusual-device scoring).
@@ -62,6 +63,11 @@ export function MapScreen(): React.JSX.Element {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>('all');
+  // which devices get the red ring overlay: flag-tag matches (the old, only
+  // source) and/or police hits. Independent of the Show filter: the ring
+  // decorates the dots, the filter decides which dots exist at all.
+  const [ringTags, setRingTags] = useState(true);
+  const [ringPolice, setRingPolice] = useState(false);
   const [minN, setMinN] = useState(3);
   const [query, setQuery] = useState('');
   const [fan, setFan] = useState(true);
@@ -219,11 +225,12 @@ export function MapScreen(): React.JSX.Element {
     for (const d of visible) {
       const target = !sel || selected.has(d.mac) ? on : off;
       const [dx, dy] = fan ? fanOffset(d.mac, d.est.lat) : [0, 0];
+      const ring = (ringTags && flagged.has(d.mac)) || (ringPolice && d.police) ? 1 : 0;
       for (const p of d.points) {
         target.push({
           type: 'Feature',
           geometry: {type: 'Point', coordinates: [p.lon + dx, p.lat + dy]},
-          properties: {mac: d.mac, color: colors.get(d.mac), police: d.police ? 1 : 0, flagged: flagged.has(d.mac) ? 1 : 0},
+          properties: {mac: d.mac, color: colors.get(d.mac), police: d.police ? 1 : 0, flagged: flagged.has(d.mac) ? 1 : 0, ring},
         });
       }
     }
@@ -250,12 +257,17 @@ export function MapScreen(): React.JSX.Element {
         type: 'FeatureCollection',
         features: chosen.map(d => ({
           type: 'Feature',
-          properties: {color: colors.get(d.mac), flagged: flagged.has(d.mac) ? 1 : 0, label: `${deviceLabel(d)}\n±${d.est.r.toFixed(0)} m`},
+          properties: {
+            color: colors.get(d.mac),
+            flagged: flagged.has(d.mac) ? 1 : 0,
+            ring: (ringTags && flagged.has(d.mac)) || (ringPolice && d.police) ? 1 : 0,
+            label: `${deviceLabel(d)}\n±${d.est.r.toFixed(0)} m`,
+          },
           geometry: {type: 'Point', coordinates: [d.est.lon, d.est.lat]},
         })),
       } as GeoJSON.FeatureCollection,
     };
-  }, [visible, selected, showOthers, fan, colors, devices, hunts, flagged]);
+  }, [visible, selected, showOthers, fan, colors, devices, hunts, flagged, ringTags, ringPolice]);
 
   // --- selection ---
   const select = useCallback((mac: string, add = false) => {
@@ -361,7 +373,7 @@ export function MapScreen(): React.JSX.Element {
           <ShapeSource id="dim" shape={shapes.off} hitbox={HITBOX} onPress={onDotsPress}>
             <CircleLayer
               id="dim-flag-ring"
-              filter={['==', ['get', 'flagged'], 1]}
+              filter={['==', ['get', 'ring'], 1]}
               style={{
                 circleRadius: ['interpolate', ['linear'], ['zoom'], 12, 5, 17, 7.5],
                 circleColor: 'rgba(0,0,0,0)',
@@ -396,7 +408,7 @@ export function MapScreen(): React.JSX.Element {
           <ShapeSource id="dots" shape={shapes.on} hitbox={HITBOX} onPress={onDotsPress}>
             <CircleLayer
               id="dots-flag-ring"
-              filter={['==', ['get', 'flagged'], 1]}
+              filter={['==', ['get', 'ring'], 1]}
               style={{
                 // target marker: a red ring with clear air around the dot,
                 // so it stays visible even on red-filled (police) dots.
@@ -439,7 +451,7 @@ export function MapScreen(): React.JSX.Element {
           <ShapeSource id="est-pt" shape={shapes.estPt}>
             <CircleLayer
               id="est-pt-flag-ring"
-              filter={['==', ['get', 'flagged'], 1]}
+              filter={['==', ['get', 'ring'], 1]}
               style={{circleRadius: 11, circleColor: 'rgba(0,0,0,0)', circleStrokeColor: FLAG_RED, circleStrokeWidth: 2.5}}
             />
             <CircleLayer id="est-dot" style={{circleRadius: 7, circleColor: ['get', 'color'], circleStrokeColor: surface, circleStrokeWidth: 2.5}} />
@@ -552,6 +564,12 @@ export function MapScreen(): React.JSX.Element {
             <View style={styles.wrap}>
               <Chip styles={styles} active={fan} label="Fan out devices at the same spot" onPress={() => setFan(v => !v)} />
             </View>
+
+            <Text style={styles.sheetH}>Red ring around dots</Text>
+            <View style={styles.wrap}>
+              <Check styles={styles} on={ringTags} label="Highlight tags" onPress={() => setRingTags(v => !v)} />
+              <Check styles={styles} on={ringPolice} label="Highlight police" onPress={() => setRingPolice(v => !v)} />
+            </View>
           </ScrollView>
           <Pressable style={styles.done} onPress={() => setMenuOpen(false)}>
             <Text style={styles.doneTxt}>Done</Text>
@@ -636,6 +654,16 @@ function Chip({styles, active, label, sub, onPress}: {styles: Styles; active: bo
     <Pressable style={[styles.chip, active && styles.chipOn]} onPress={onPress} accessibilityState={{selected: active}}>
       <Text style={[styles.chipTxt, active && styles.chipTxtOn]}>{label}</Text>
       {sub ? <Text style={[styles.chipSub, active && styles.chipTxtOn]}>{sub}</Text> : null}
+    </Pressable>
+  );
+}
+
+/** a literal checkbox: box ticks on/off, whole row is the tap target */
+function Check({styles, on, label, onPress}: {styles: Styles; on: boolean; label: string; onPress: () => void}) {
+  return (
+    <Pressable style={styles.check} onPress={onPress} accessibilityRole="checkbox" accessibilityState={{checked: on}}>
+      <View style={[styles.checkBox, on && styles.checkBoxOn]}>{on ? <Text style={styles.checkTick}>✓</Text> : null}</View>
+      <Text style={styles.checkTxt}>{label}</Text>
     </Pressable>
   );
 }
@@ -750,6 +778,11 @@ function makeStyles(t: Theme) {
     chipTxt: {fontSize: 13, color: t.text, fontWeight: '600'},
     chipSub: {fontSize: 11, color: t.textMuted},
     chipTxtOn: {color: t.bg},
+    check: {flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4},
+    checkBox: {width: 20, height: 20, borderRadius: 5, borderWidth: 1.5, borderColor: t.border, backgroundColor: t.surface, alignItems: 'center', justifyContent: 'center'},
+    checkBoxOn: {backgroundColor: FLAG_RED, borderColor: FLAG_RED},
+    checkTick: {fontSize: 14, fontWeight: '700', color: '#fff', lineHeight: 17},
+    checkTxt: {fontSize: 13, color: t.text, fontWeight: '600'},
     stepper: {flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: t.border, borderRadius: 999, backgroundColor: t.surface},
     stepBtn: {paddingHorizontal: 12, paddingVertical: 4},
     stepTxt: {fontSize: 16, color: t.text, fontWeight: '700'},
